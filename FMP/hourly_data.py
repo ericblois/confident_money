@@ -82,36 +82,31 @@ def _parse_fmp_datetime(value: str) -> datetime:
     raise ValueError(f"Unsupported FMP datetime format: {value}")
 
 
-def _format_cache_date(value: datetime) -> str:
-    return value.strftime("%Y_%m_%d")
+def _build_hourly_cache_path(symbol: str) -> Path:
+    return FMP_HOURLY_CACHE_DIR / f"{symbol.upper()}_hourly.csv"
 
 
-def _build_hourly_cache_path(symbol: str, start_date: datetime, end_date: datetime) -> Path:
+def _is_hourly_cache_path(cache_path: Path, symbol: str) -> bool:
+    if cache_path.suffix.lower() != ".csv":
+        return False
+
     normalized_symbol = symbol.upper()
-    return (
-        FMP_HOURLY_CACHE_DIR
-        / f"{normalized_symbol}_hourly_{_format_cache_date(start_date)}_{_format_cache_date(end_date)}.csv"
-    )
+    canonical_stem = f"{normalized_symbol}_hourly"
+    legacy_prefix = f"{canonical_stem}_"
+    return cache_path.stem == canonical_stem or cache_path.stem.startswith(legacy_prefix)
 
 
-def _parse_hourly_cache_path(
-    cache_path: Path, symbol: str
-) -> tuple[datetime, datetime] | None:
-    prefix = f"{symbol.upper()}_hourly_"
-    if cache_path.suffix.lower() != ".csv" or not cache_path.stem.startswith(prefix):
-        return None
+def _get_hourly_cache_paths(symbol: str) -> list[Path]:
+    if not FMP_HOURLY_CACHE_DIR.exists():
+        return []
 
-    date_parts = cache_path.stem.removeprefix(prefix).split("_")
-    if len(date_parts) != 6:
-        return None
-
-    try:
-        start_date = datetime.strptime("_".join(date_parts[:3]), "%Y_%m_%d")
-        end_date = datetime.strptime("_".join(date_parts[3:]), "%Y_%m_%d")
-    except ValueError:
-        return None
-
-    return start_date, end_date
+    canonical_path = _build_hourly_cache_path(symbol)
+    cache_paths = [
+        cache_path
+        for cache_path in FMP_HOURLY_CACHE_DIR.iterdir()
+        if cache_path.is_file() and _is_hourly_cache_path(cache_path, symbol)
+    ]
+    return sorted(cache_paths, key=lambda cache_path: (cache_path != canonical_path, cache_path.name))
 
 
 def _normalize_hourly_dataframe(dataframe: pd.DataFrame) -> FMPHourlyDataFrame:
@@ -152,7 +147,10 @@ def _merge_hourly_dataframes(dataframes: Sequence[pd.DataFrame]) -> FMPHourlyDat
 
 
 def _load_hourly_cache(cache_path: Path) -> FMPHourlyDataFrame:
-    return _normalize_hourly_dataframe(pd.read_csv(cache_path))
+    try:
+        return _normalize_hourly_dataframe(pd.read_csv(cache_path))
+    except pd.errors.EmptyDataError:
+        return FMPHourlyDataFrame(pd.DataFrame(columns=FMP_HOURLY_COLUMNS))
 
 
 def _get_hourly_dataframe_bounds(
@@ -169,43 +167,10 @@ def _get_hourly_dataframe_bounds(
     return parsed_dates.min().to_pydatetime(), parsed_dates.max().to_pydatetime()
 
 
-def _select_hourly_cache_path(
-    symbol: str, start_date: datetime, end_date: datetime
-) -> Path | None:
-    exact_cache_path = _build_hourly_cache_path(symbol, start_date, end_date)
-    if exact_cache_path.exists():
-        return exact_cache_path
-
-    if not FMP_HOURLY_CACHE_DIR.exists():
-        return None
-
-    request_start = start_date
-    request_end = end_date
-    best_candidate: tuple[tuple[int, float, float, float], Path] | None = None
-
-    for cache_path in FMP_HOURLY_CACHE_DIR.iterdir():
-        cache_range = _parse_hourly_cache_path(cache_path, symbol)
-        if cache_range is None:
-            continue
-
-        cache_start, cache_end = cache_range
-        cache_end = cache_end + timedelta(days=1) - timedelta(seconds=1)
-        overlap_start = max(request_start, cache_start)
-        overlap_end = min(request_end, cache_end)
-        overlap_seconds = max(0.0, (overlap_end - overlap_start).total_seconds())
-        coverage_seconds = max(0.0, (cache_end - cache_start).total_seconds())
-        contains_request = int(cache_start <= request_start and cache_end >= request_end)
-        score = (
-            contains_request,
-            overlap_seconds,
-            coverage_seconds,
-            cache_end.timestamp(),
-        )
-
-        if best_candidate is None or score > best_candidate[0]:
-            best_candidate = (score, cache_path)
-
-    return None if best_candidate is None else best_candidate[1]
+def _cleanup_redundant_hourly_caches(symbol: str, keep_cache_path: Path) -> None:
+    for cache_path in _get_hourly_cache_paths(symbol):
+        if cache_path != keep_cache_path and cache_path.exists():
+            cache_path.unlink()
 
 
 def _save_hourly_cache(dataframe: pd.DataFrame, cache_path: Path) -> None:
@@ -345,26 +310,24 @@ def fmp_get_hourly_dataframe(
     if start_date > end_date:
         raise ValueError("start_date must be less than or equal to end_date.")
 
-    request_cache_path = _build_hourly_cache_path(symbol, start_date, end_date)
-    source_cache_path = _select_hourly_cache_path(symbol, start_date, end_date)
-    cached_dataframe = (
-        _load_hourly_cache(source_cache_path)
-        if source_cache_path is not None and source_cache_path.exists()
-        else FMPHourlyDataFrame(pd.DataFrame(columns=FMP_HOURLY_COLUMNS))
+    cache_path = _build_hourly_cache_path(symbol)
+    cache_paths = _get_hourly_cache_paths(symbol)
+    cached_dataframe = _merge_hourly_dataframes(
+        [_load_hourly_cache(existing_cache_path) for existing_cache_path in cache_paths]
     )
-
-    requested_dataframe = _filter_hourly_dataframe(cached_dataframe, start_date, end_date)
-    requested_bounds = _get_hourly_dataframe_bounds(requested_dataframe)
+    cached_bounds = _get_hourly_dataframe_bounds(cached_dataframe)
     refresh_frames: list[pd.DataFrame] = []
+    should_write_cache = cache_path not in cache_paths or len(cache_paths) > 1
 
-    if requested_bounds is None:
+    if cached_bounds is None:
         refresh_frames.append(
             fmp_hourly_to_dataframe(
                 fmp_get_hourly(symbol, start_date, end_date, verbose=verbose)
             )
         )
+        should_write_cache = True
     else:
-        cached_start, cached_end = requested_bounds
+        cached_start, cached_end = cached_bounds
 
         if cached_start.date() > start_date.date():
             refresh_frames.append(
@@ -372,6 +335,7 @@ def fmp_get_hourly_dataframe(
                     fmp_get_hourly(symbol, start_date, cached_start, verbose=verbose)
                 )
             )
+            should_write_cache = True
 
         if cached_end.date() < end_date.date():
             refresh_start = max(start_date, cached_end - FMP_HOURLY_CACHE_TAIL_REFRESH)
@@ -380,6 +344,7 @@ def fmp_get_hourly_dataframe(
                     fmp_get_hourly(symbol, refresh_start, end_date, verbose=verbose)
                 )
             )
+            should_write_cache = True
         elif end_date.date() >= (datetime.now().date() - FMP_HOURLY_CACHE_TAIL_REFRESH):
             refresh_start = max(start_date, cached_end - FMP_HOURLY_CACHE_TAIL_REFRESH)
             refresh_frames.append(
@@ -387,11 +352,16 @@ def fmp_get_hourly_dataframe(
                     fmp_get_hourly(symbol, refresh_start, end_date, verbose=verbose)
                 )
             )
+            should_write_cache = True
 
-    final_dataframe = _filter_hourly_dataframe(
-        _merge_hourly_dataframes([requested_dataframe, *refresh_frames]),
+    expanded_cached_dataframe = _merge_hourly_dataframes([cached_dataframe, *refresh_frames])
+
+    if should_write_cache:
+        _save_hourly_cache(expanded_cached_dataframe, cache_path)
+        _cleanup_redundant_hourly_caches(symbol, cache_path)
+
+    return _filter_hourly_dataframe(
+        expanded_cached_dataframe,
         start_date,
         end_date,
     )
-    _save_hourly_cache(final_dataframe, request_cache_path)
-    return final_dataframe
