@@ -38,6 +38,7 @@ class LineStyle:
 
 @dataclass(slots=True)
 class _HoverSeriesData:
+    pane_name: str
     name: str
     plot_x: np.ndarray
     raw_x: list[Any]
@@ -63,6 +64,22 @@ class _HoverSeriesData:
 
         distances = np.abs(self.plot_x - target_x)
         return int(np.nanargmin(distances)) if distances.size else None
+
+
+@dataclass(slots=True)
+class _ChartPane:
+    name: str
+    y_label: str
+    height_ratio: int
+    view_box: "_AutoFitViewBox"
+    plot_item: pg.PlotItem
+    hover_line: pg.PlotCurveItem | None = None
+    hover_tooltip: pg.TextItem | None = None
+    series_count: int = 0
+
+    @property
+    def hover_title(self) -> str:
+        return self.y_label or self.name.title()
 
 
 # Axis and view helpers make the chart readable while keeping y-scaling tied to
@@ -181,24 +198,18 @@ class DataChart:
 
         pg.setConfigOptions(antialias=False, leftButtonPan=True)
 
-        self._view_box = _AutoFitViewBox(vertical_fill_ratio=0.9)
-        self._plot_widget = pg.PlotWidget(
-            viewBox=self._view_box,
-            axisItems={"bottom": self._build_bottom_axis()},
-            background="w",
-        )
-        self._plot_item = self._plot_widget.getPlotItem()
-        self._plot_item.addLegend(offset=(10, 10))
-
+        self._layout_widget = pg.GraphicsLayoutWidget()
+        self._layout_widget.setBackground("w")
         self._window: QtWidgets.QMainWindow | None = None
-        self._series_count = 0
+
+        self._panes: list[_ChartPane] = []
+        self._pane_by_name: dict[str, _ChartPane] = {}
         self._hover_series_data: list[_HoverSeriesData] = []
         self._hover_x_position: float | None = None
-        self._hover_line: pg.PlotCurveItem | None = None
-        self._hover_tooltip: pg.TextItem | None = None
+        self._active_hover_pane: _ChartPane | None = None
         self._mouse_proxy: pg.SignalProxy | None = None
 
-        self._configure_plot()
+        self._create_pane("main", y_label=self.y_label, height_ratio=3)
         if self.show_spikes:
             self._configure_hover_feedback()
 
@@ -210,41 +221,102 @@ class DataChart:
         axis.set_values(self.data[self.x_column])
         return axis
 
-    def _configure_plot(self) -> None:
-        self._plot_item.setTitle(self.title, color="#222222", size="14pt")
-        self._plot_item.setLabel("bottom", self.x_column.title(), color="#444444")
-        self._plot_item.setLabel("left", self.y_label, color="#444444")
-        self._plot_item.showGrid(x=True, y=True, alpha=0.15)
-        self._plot_item.setClipToView(True)
-        self._plot_item.setDownsampling(auto=True, mode="peak")
+    def _configure_pane_plot(self, pane: _ChartPane) -> None:
+        pane.plot_item.setLabel("left", pane.y_label, color="#444444")
+        pane.plot_item.showGrid(x=True, y=True, alpha=0.15)
+        pane.plot_item.setClipToView(True)
+        pane.plot_item.setDownsampling(auto=True, mode="peak")
+
+    def _create_pane(
+        self,
+        name: str,
+        *,
+        y_label: str,
+        height_ratio: int,
+    ) -> _ChartPane:
+        view_box = _AutoFitViewBox(vertical_fill_ratio=0.9)
+        plot_item = self._layout_widget.addPlot(
+            row=len(self._panes),
+            col=0,
+            viewBox=view_box,
+            axisItems={"bottom": self._build_bottom_axis()},
+        )
+        plot_item.addLegend(offset=(10, 10))
+
+        if self._panes:
+            plot_item.setXLink(self._panes[0].plot_item)
+
+        pane = _ChartPane(
+            name=name,
+            y_label=y_label,
+            height_ratio=max(1, int(height_ratio)),
+            view_box=view_box,
+            plot_item=plot_item,
+        )
+        self._configure_pane_plot(pane)
+        self._panes.append(pane)
+        self._pane_by_name[name] = pane
+
+        self._set_pane_height(len(self._panes) - 1, pane.height_ratio)
+        self._refresh_pane_axes()
+
+        if self.show_spikes:
+            self._attach_hover_feedback_to_pane(pane)
+
+        pane.view_box.sigRangeChanged.connect(self._handle_view_range_changed)
+        return pane
+
+    def _set_pane_height(self, row: int, height_ratio: int) -> None:
+        layout = getattr(self._layout_widget.ci, "layout", None)
+        if layout is not None and hasattr(layout, "setRowStretchFactor"):
+            layout.setRowStretchFactor(row, max(1, int(height_ratio)))
+
+    def _refresh_pane_axes(self) -> None:
+        for index, pane in enumerate(self._panes):
+            pane.plot_item.setLabel("left", pane.y_label, color="#444444")
+            if index == 0:
+                pane.plot_item.setTitle(self.title, color="#222222", size="14pt")
+            else:
+                pane.plot_item.setTitle("")
+
+            if index == len(self._panes) - 1:
+                pane.plot_item.showAxis("bottom")
+                pane.plot_item.setLabel("bottom", self.x_column.title(), color="#444444")
+            else:
+                pane.plot_item.hideAxis("bottom")
 
     def _configure_hover_feedback(self) -> None:
-        self._hover_line = pg.PlotCurveItem(
-            x=[],
-            y=[],
-            pen=self._build_hover_line_pen(),
-            connect="all",
-            antialias=False,
-        )
-        self._hover_line.setZValue(9)
-        self._hover_line.hide()
-        self._plot_item.addItem(self._hover_line, ignoreBounds=True)
-
-        self._hover_tooltip = pg.TextItem(
-            anchor=(0, 1),
-            border=pg.mkPen("#b7c1cc"),
-            fill=pg.mkBrush(255, 255, 255, 235),
-        )
-        self._hover_tooltip.setZValue(10)
-        self._hover_tooltip.hide()
-        self._plot_item.addItem(self._hover_tooltip, ignoreBounds=True)
+        for pane in self._panes:
+            self._attach_hover_feedback_to_pane(pane)
 
         self._mouse_proxy = pg.SignalProxy(
-            self._plot_widget.scene().sigMouseMoved,
+            self._layout_widget.scene().sigMouseMoved,
             rateLimit=60,
             slot=self._handle_mouse_moved,
         )
-        self._view_box.sigRangeChanged.connect(self._handle_view_range_changed)
+
+    def _attach_hover_feedback_to_pane(self, pane: _ChartPane) -> None:
+        if pane.hover_line is None:
+            pane.hover_line = pg.PlotCurveItem(
+                x=[],
+                y=[],
+                pen=self._build_hover_line_pen(),
+                connect="all",
+                antialias=False,
+            )
+            pane.hover_line.setZValue(9)
+            pane.hover_line.hide()
+            pane.plot_item.addItem(pane.hover_line, ignoreBounds=True)
+
+        if pane.hover_tooltip is None:
+            pane.hover_tooltip = pg.TextItem(
+                anchor=(0, 1),
+                border=pg.mkPen("#b7c1cc"),
+                fill=pg.mkBrush(255, 255, 255, 235),
+            )
+            pane.hover_tooltip.setZValue(10)
+            pane.hover_tooltip.hide()
+            pane.plot_item.addItem(pane.hover_tooltip, ignoreBounds=True)
 
     def _build_hover_line_pen(self) -> QtGui.QPen:
         pen = QtGui.QPen(QtGui.QColor("#334155"))
@@ -255,46 +327,67 @@ class DataChart:
         return pen
 
     def _handle_mouse_moved(self, event: tuple[Any, ...]) -> None:
-        if self._hover_line is None or self._hover_tooltip is None:
-            return
-
-        position = event[0]
-        if not self._plot_item.sceneBoundingRect().contains(position):
+        active_pane = self._pane_at_scene_position(event[0])
+        if active_pane is None:
             self._hide_hover_feedback()
             return
 
-        mouse_point = self._view_box.mapSceneToView(position)
+        mouse_point = active_pane.view_box.mapSceneToView(event[0])
         hover_lines, snapped_x = self._build_hover_lines(mouse_point.x())
         if not hover_lines:
             self._hide_hover_feedback()
             return
 
         self._hover_x_position = snapped_x
+        self._active_hover_pane = active_pane
         self._update_hover_line()
-        self._hover_tooltip.setHtml("<br>".join(hover_lines))
-        self._position_hover_tooltip(snapped_x, mouse_point.y())
-        self._hover_tooltip.show()
+
+        if active_pane.hover_tooltip is None:
+            return
+
+        for pane in self._panes:
+            if pane.hover_tooltip is not None and pane is not active_pane:
+                pane.hover_tooltip.hide()
+
+        active_pane.hover_tooltip.setHtml("<br>".join(hover_lines))
+        self._position_hover_tooltip(active_pane, snapped_x, mouse_point.y())
+        active_pane.hover_tooltip.show()
+
+    def _pane_at_scene_position(self, position: Any) -> _ChartPane | None:
+        for pane in self._panes:
+            if pane.view_box.sceneBoundingRect().contains(position):
+                return pane
+        return None
 
     def _handle_view_range_changed(self, *_: Any) -> None:
         self._update_hover_line()
 
     def _hide_hover_feedback(self) -> None:
         self._hover_x_position = None
-        if self._hover_line is not None:
-            self._hover_line.hide()
-        if self._hover_tooltip is not None:
-            self._hover_tooltip.hide()
+        self._active_hover_pane = None
+        for pane in self._panes:
+            if pane.hover_line is not None:
+                pane.hover_line.hide()
+            if pane.hover_tooltip is not None:
+                pane.hover_tooltip.hide()
 
     def _update_hover_line(self) -> None:
-        if self._hover_line is None or self._hover_x_position is None:
+        if self._hover_x_position is None:
+            for pane in self._panes:
+                if pane.hover_line is not None:
+                    pane.hover_line.hide()
             return
 
-        y_min, y_max = self._view_box.viewRange()[1]
-        self._hover_line.setData(
-            x=np.array([self._hover_x_position, self._hover_x_position], dtype=float),
-            y=np.array([y_min, y_max], dtype=float),
-        )
-        self._hover_line.show()
+        for pane in self._panes:
+            if pane.hover_line is None:
+                continue
+
+            y_min, y_max = pane.view_box.viewRange()[1]
+            pane.hover_line.setData(
+                x=np.array([self._hover_x_position, self._hover_x_position], dtype=float),
+                y=np.array([y_min, y_max], dtype=float),
+            )
+            pane.hover_line.show()
 
     def _build_hover_lines(self, target_x: float) -> tuple[list[str], float]:
         snapped = self._snap_hover_x(target_x)
@@ -303,10 +396,21 @@ class DataChart:
 
         snapped_raw_x, snapped_plot_x = snapped
         rows: list[str] = []
+        current_pane_name: str | None = None
+
         for hover_data in self._hover_series_data:
             index = hover_data.nearest_index(snapped_plot_x)
             if index is None:
                 continue
+
+            matched_plot_x = float(hover_data.plot_x[index])
+            if not self._hover_points_match(matched_plot_x, snapped_plot_x):
+                continue
+
+            if len(self._panes) > 1 and hover_data.pane_name != current_pane_name:
+                pane = self._pane_by_name[hover_data.pane_name]
+                rows.append(self._format_hover_section_header(pane.hover_title))
+                current_pane_name = hover_data.pane_name
 
             rows.append(
                 self._format_hover_row(
@@ -326,6 +430,9 @@ class DataChart:
         )
         return [header, *rows], snapped_plot_x
 
+    def _hover_points_match(self, point_x: float, snapped_x: float) -> bool:
+        return bool(np.isclose(point_x, snapped_x, rtol=1e-9, atol=1e-9))
+
     def _snap_hover_x(self, target_x: float) -> tuple[Any, float] | None:
         best_match: tuple[Any, float, float] | None = None
 
@@ -342,6 +449,13 @@ class DataChart:
         if best_match is None:
             return None
         return best_match[0], best_match[1]
+
+    def _format_hover_section_header(self, title: str) -> str:
+        return (
+            "<span style='color:#475569; font-size:9pt; font-weight:600;'>"
+            f"{title}"
+            "</span>"
+        )
 
     def _format_hover_row(self, *, name: str, y_value: float, color: str) -> str:
         return (
@@ -361,12 +475,17 @@ class DataChart:
         numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
         return str(value) if pd.isna(numeric_value) else f"{float(numeric_value):,.2f}"
 
-    def _position_hover_tooltip(self, x_position: float, y_position: float) -> None:
-        if self._hover_tooltip is None:
+    def _position_hover_tooltip(
+        self,
+        pane: _ChartPane,
+        x_position: float,
+        y_position: float,
+    ) -> None:
+        if pane.hover_tooltip is None:
             return
 
-        x_min, x_max = self._view_box.viewRange()[0]
-        y_min, y_max = self._view_box.viewRange()[1]
+        x_min, x_max = pane.view_box.viewRange()[0]
+        y_min, y_max = pane.view_box.viewRange()[1]
         x_padding = (x_max - x_min) * 0.02 or 1.0
         y_padding = (y_max - y_min) * 0.02 or 1.0
 
@@ -379,8 +498,8 @@ class DataChart:
             else min(y_max - y_padding, y_position + y_padding)
         )
 
-        self._hover_tooltip.setAnchor((1 if place_left else 0, 1 if place_top else 0))
-        self._hover_tooltip.setPos(tooltip_x, tooltip_y)
+        pane.hover_tooltip.setAnchor((1 if place_left else 0, 1 if place_top else 0))
+        pane.hover_tooltip.setPos(tooltip_x, tooltip_y)
 
     def _resolve_series(
         self,
@@ -419,6 +538,30 @@ class DataChart:
             return pd.Series(np.arange(len(values), dtype=float))
         return pd.to_numeric(values, errors="coerce")
 
+    def _resolve_pane(self, pane: str) -> _ChartPane:
+        if pane not in self._pane_by_name:
+            raise ValueError(f"Unknown chart pane: {pane}")
+        return self._pane_by_name[pane]
+
+    def add_pane(
+        self,
+        name: str,
+        *,
+        y_label: str | None = None,
+        height_ratio: int = 1,
+    ) -> "DataChart":
+        """Add a named pane below the existing chart panes."""
+
+        if name in self._pane_by_name:
+            raise ValueError(f"Chart pane already exists: {name}")
+
+        self._create_pane(
+            name,
+            y_label=y_label or name.title(),
+            height_ratio=height_ratio,
+        )
+        return self
+
     def add_close_line(
         self,
         *,
@@ -426,10 +569,36 @@ class DataChart:
         name: str = "Close",
         color: str = "#1f77b4",
         width: float = 2.0,
+        pane: str = "main",
     ) -> "DataChart":
         """Convenience helper for plotting a standard close-price line."""
 
-        return self.add_line(name=name, y=column, color=color, width=width)
+        return self.add_line(name=name, y=column, color=color, width=width, pane=pane)
+
+    def add_horizontal_line(
+        self,
+        *,
+        name: str,
+        y: float,
+        pane: str = "main",
+        color: str = "#94a3b8",
+        width: float = 1.5,
+        dash: str = "dash",
+        opacity: float = 1.0,
+        hover: bool = False,
+    ) -> "DataChart":
+        """Plot a constant horizontal reference line across a pane."""
+
+        return self.add_line(
+            name=name,
+            y=np.full(len(self.data), float(y), dtype=float),
+            pane=pane,
+            color=color,
+            width=width,
+            dash=dash,
+            opacity=opacity,
+            hover=hover,
+        )
 
     def add_line(
         self,
@@ -437,13 +606,16 @@ class DataChart:
         y: SeriesInput,
         *,
         x: SeriesInput | None = None,
+        pane: str = "main",
         color: str = "#1f77b4",
         width: float = 2.0,
         dash: str = "solid",
         opacity: float = 1.0,
+        hover: bool = True,
     ) -> "DataChart":
         """Plot a line, register it for hover feedback, and include it in auto-fit."""
 
+        target_pane = self._resolve_pane(pane)
         x_values = self._coerce_x_values(
             self._resolve_series(x, name=f"x-axis for {name}", default=self.data[self.x_column])
         )
@@ -454,19 +626,28 @@ class DataChart:
         y_values = pd.to_numeric(self._resolve_series(y, name=name), errors="coerce")
         style = LineStyle(color=color, width=width, dash=dash, opacity=opacity)
 
-        self._plot_line(name=name, x_values=x_values, y_values=y_values, style=style)
+        self._plot_line(
+            pane=target_pane,
+            name=name,
+            x_values=x_values,
+            y_values=y_values,
+            style=style,
+            hover=hover,
+        )
         return self
 
     def _plot_line(
         self,
         *,
+        pane: _ChartPane,
         name: str,
         x_values: pd.Series,
         y_values: pd.Series,
         style: LineStyle,
+        hover: bool,
     ) -> None:
         plot_x = self._to_plot_x(x_values)
-        item = self._plot_item.plot(
+        item = pane.plot_item.plot(
             x=plot_x.to_numpy(dtype=float, copy=False),
             y=y_values.to_numpy(dtype=float, copy=False),
             name=name,
@@ -475,26 +656,29 @@ class DataChart:
             antialias=False,
         )
 
-        self._view_box.register_series(plot_x, y_values)
-        self._register_hover_series(
-            name=name,
-            x_values=x_values,
-            plot_x=plot_x,
-            y_values=y_values,
-            color=style.color,
-        )
+        pane.view_box.register_series(plot_x, y_values)
+        if hover:
+            self._register_hover_series(
+                pane_name=pane.name,
+                name=name,
+                x_values=x_values,
+                plot_x=plot_x,
+                y_values=y_values,
+                color=style.color,
+            )
 
-        if self._series_count == 0:
-            self._plot_item.autoRange()
+        if pane.series_count == 0:
+            pane.plot_item.autoRange()
         else:
             item.informViewBoundsChanged()
 
-        self._series_count += 1
-        self._view_box.refit_y_range()
+        pane.series_count += 1
+        pane.view_box.refit_y_range()
 
     def _register_hover_series(
         self,
         *,
+        pane_name: str,
         name: str,
         x_values: pd.Series,
         plot_x: pd.Series,
@@ -508,6 +692,7 @@ class DataChart:
         hover_plot_x = plot_x[hover_mask].to_numpy(dtype=float, copy=True)
         self._hover_series_data.append(
             _HoverSeriesData(
+                pane_name=pane_name,
                 name=name,
                 plot_x=hover_plot_x,
                 raw_x=x_values[hover_mask].reset_index(drop=True).tolist(),
@@ -522,7 +707,7 @@ class DataChart:
             window = QtWidgets.QMainWindow()
             window.setWindowTitle(self.title)
             window.resize(width, height)
-            window.setCentralWidget(self._plot_widget)
+            window.setCentralWidget(self._layout_widget)
             self._window = window
         return self._window
 
@@ -534,8 +719,9 @@ class DataChart:
         window.raise_()
         window.activateWindow()
 
-        self._plot_item.autoRange()
-        self._view_box.refit_y_range()
+        for pane in self._panes:
+            pane.plot_item.autoRange()
+            pane.view_box.refit_y_range()
 
         if self._owns_app:
             self._app.exec()

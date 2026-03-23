@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import (
@@ -14,19 +12,15 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from FMP.api import fmp_get_json, get_fmp_api_key
 from utils import console_loading
 
 
 type FMPHourlyColumn = Literal["date", "open", "high", "low", "close", "volume"]
 
-
-FMP_BASE_URL = "https://financialmodelingprep.com/stable/historical-chart/1hour"
-FMP_API_KEY_ENV = "FMP_API_KEY"
 FMP_HOURLY_COLUMNS: tuple[FMPHourlyColumn, ...] = (
     "date",
     "open",
@@ -99,17 +93,6 @@ def _parse_fmp_datetime(value: str) -> datetime:
 def _validate_date_range(start_date: datetime, end_date: datetime) -> None:
     if start_date > end_date:
         raise ValueError("start_date must be less than or equal to end_date.")
-
-
-def _get_fmp_api_key() -> str:
-    api_key = os.getenv(FMP_API_KEY_ENV)
-    if api_key:
-        return api_key
-
-    raise RuntimeError(
-        f"Missing {FMP_API_KEY_ENV}. Set it in your shell environment before calling "
-        "fmp_get_hourly()."
-    )
 
 
 def _empty_hourly_dataframe() -> FMPHourlyDataFrame:
@@ -257,20 +240,15 @@ def _fetch_fmp_hourly_window(
     symbol: str,
     start_date: datetime,
     end_date: datetime,
-    api_key: str,
 ) -> list[FMPHourlyRow]:
-    query = urlencode(
+    payload = fmp_get_json(
+        "/historical-chart/1hour",
         {
             "symbol": symbol,
             "from": start_date.strftime("%Y-%m-%d"),
             "to": end_date.strftime("%Y-%m-%d"),
-            "apikey": api_key,
-        }
+        },
     )
-    request = Request(f"{FMP_BASE_URL}?{query}", headers={"Accept": "application/json"})
-
-    with urlopen(request, timeout=30) as response:
-        payload = json.load(response)
 
     if not isinstance(payload, list):
         raise RuntimeError(f"Unexpected response from FMP: {payload}")
@@ -336,7 +314,7 @@ def fmp_get_hourly(
 ) -> list[FMPHourlyRow]:
     """Fetch hourly FMP chart data for `symbol` between `start_date` and `end_date`, inclusive."""
     _validate_date_range(start_date, end_date)
-    api_key = _get_fmp_api_key()
+    get_fmp_api_key()
 
     all_rows_by_date: dict[str, FMPHourlyRow] = {}
     current_end_date = end_date
@@ -349,7 +327,7 @@ def fmp_get_hourly(
         console_loading(last_reported_percent, loading_message)
 
     while True:
-        window_rows = _fetch_fmp_hourly_window(symbol, start_date, current_end_date, api_key)
+        window_rows = _fetch_fmp_hourly_window(symbol, start_date, current_end_date)
         if not window_rows:
             break
 
