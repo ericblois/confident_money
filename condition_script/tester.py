@@ -28,7 +28,6 @@ from condition_script.parser import parse_condition, parse_expression
 from condition_script.types import (
     BOOLEAN,
     NUMBER,
-    STRING,
     ArithmeticExpression,
     ColumnExpression,
     ComparisonExpression,
@@ -528,15 +527,15 @@ def _eval_rel_trend_r2(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, .
 def _build_default_function_registry() -> FunctionRegistry:
     registry: FunctionRegistry = {}
 
-    numeric_source = parameter("source", NUMBER, STRING)
-    numeric_left = parameter("left", NUMBER, STRING)
-    numeric_right = parameter("right", NUMBER, STRING)
-    numeric_benchmark = parameter("benchmark", NUMBER, STRING)
-    numeric_return = parameter("return", NUMBER, STRING)
-    numeric_rel_return = parameter("rel_return", NUMBER, STRING)
-    numeric_volatility = parameter("volatility", NUMBER, STRING)
-    numeric_price = parameter("price", NUMBER, STRING)
-    numeric_volume = parameter("volume", NUMBER, STRING)
+    numeric_source = parameter("source", NUMBER)
+    numeric_left = parameter("left", NUMBER)
+    numeric_right = parameter("right", NUMBER)
+    numeric_benchmark = parameter("benchmark", NUMBER)
+    numeric_return = parameter("return", NUMBER)
+    numeric_rel_return = parameter("rel_return", NUMBER)
+    numeric_volatility = parameter("volatility", NUMBER)
+    numeric_price = parameter("price", NUMBER)
+    numeric_volume = parameter("volume", NUMBER)
     window = parameter("window", NUMBER)
     min_periods = parameter("min_periods", NUMBER)
 

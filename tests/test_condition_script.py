@@ -23,13 +23,13 @@ class ConditionScriptTests(unittest.TestCase):
 
     def test_parse_condition_returns_boolean_expression(self) -> None:
         expression = parse_condition(
-            "mv_avg('close', 2) > mv_avg('close', 3) and (close > 11 or volume < 750)"
+            "mv_avg(close, 2) > mv_avg(close, 3) and (close > 11 or volume < 750)"
         )
 
         self.assertIs(expression.value_type, BOOLEAN)
 
     def test_add_condition_column_matches_expected_mask(self) -> None:
-        script = "mv_avg('close', 2) > mv_avg('close', 3) and (close > 11 or volume < 750)"
+        script = "mv_avg(close, 2) > mv_avg(close, 3) and (close > 11 or volume < 750)"
 
         result = add_condition_column(self.dataframe, script)
 
@@ -60,6 +60,10 @@ class ConditionScriptTests(unittest.TestCase):
         )
 
         pd.testing.assert_series_equal(result, expected, check_names=False)
+
+    def test_quoted_source_arguments_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_condition("mv_avg('close', 2) > close")
 
 
 if __name__ == "__main__":

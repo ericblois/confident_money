@@ -16,10 +16,39 @@ from condition_script.types import (
 
 
 DEFAULT_SCRIPT_PLACEHOLDER = (
-    "close > mv_avg('close', 20)\n"
-    "and volume > mv_avg('volume', 20)"
+    "close > mv_avg(close, 20)\n"
+    "and volume > mv_avg(volume, 20)"
 )
 MAX_AUTOCOMPLETE_SUGGESTIONS = 3
+_SCRIPT_EDITOR_BACKGROUND = "#252b39"
+_SCRIPT_EDITOR_SURFACE = "#1f2531"
+_SCRIPT_EDITOR_BORDER = "#3b4455"
+_SCRIPT_EDITOR_FOCUS_BORDER = "#64748b"
+_SCRIPT_EDITOR_TEXT = "#f8fafc"
+_SCRIPT_EDITOR_MUTED_TEXT = "#94a3b8"
+_SCRIPT_EDITOR_PLACEHOLDER = "#7c8598"
+_SCRIPT_EDITOR_SELECTION = "#334155"
+_SCRIPT_KEYWORDS = frozenset({"and", "or", "not"})
+_SCRIPT_BOOLEANS = frozenset({"True", "False"})
+_OPENING_BRACKETS = "([{"
+_CLOSING_BRACKETS = ")]}"
+_BRACKET_COLORS = (
+    "#fca5a5",
+    "#fdba74",
+    "#fde68a",
+    "#bef264",
+    "#86efac",
+    "#99f6e4",
+    "#7dd3fc",
+    "#93c5fd",
+    "#c4b5fd",
+    "#f9a8d4",
+)
+_BLOCK_STATE_SHIFT = 2
+_STRING_STATE_MASK = 0b11
+_STRING_STATE_NONE = 0
+_STRING_STATE_SINGLE = 1
+_STRING_STATE_DOUBLE = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +67,31 @@ class _SignatureContext:
 
 def _is_identifier_character(character: str) -> bool:
     return character.isalnum() or character == "_"
+
+
+def _build_text_format(
+    color: str,
+    *,
+    weight: QtGui.QFont.Weight | None = None,
+    italic: bool = False,
+) -> QtGui.QTextCharFormat:
+    text_format = QtGui.QTextCharFormat()
+    text_format.setForeground(QtGui.QColor(color))
+    if weight is not None:
+        text_format.setFontWeight(int(weight))
+    if italic:
+        text_format.setFontItalic(True)
+    return text_format
+
+
+def _pack_highlighter_state(nesting_depth: int, string_state: int) -> int:
+    return (max(0, nesting_depth) << _BLOCK_STATE_SHIFT) | string_state
+
+
+def _unpack_highlighter_state(state: int) -> tuple[int, int]:
+    if state < 0:
+        return 0, _STRING_STATE_NONE
+    return state >> _BLOCK_STATE_SHIFT, state & _STRING_STATE_MASK
 
 
 def _extract_completion_context(
@@ -239,11 +293,213 @@ def build_signature_hint_html(signature_context: _SignatureContext) -> str:
             formatted_parameters.append(parameter_label)
 
     return (
-        "<span style='color:#1e293b; font-size:10pt;'>"
+        f"<span style='color:{_SCRIPT_EDITOR_TEXT}; font-size:10pt;'>"
         f"<b>{escape(signature_context.function_definition.name)}</b>("
         f"{', '.join(formatted_parameters)})"
         "</span>"
     )
+
+
+class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
+    """Apply IDE-style colors to scripts with nested pastel bracket matching."""
+
+    def __init__(
+        self,
+        document: QtGui.QTextDocument,
+        function_names: Sequence[str],
+    ) -> None:
+        super().__init__(document)
+        self._function_names = frozenset(function_names)
+        self._identifier_format = _build_text_format("#d8b4fe")
+        self._function_format = _build_text_format(
+            "#7dd3fc",
+            weight=QtGui.QFont.Weight.DemiBold,
+        )
+        self._keyword_format = _build_text_format(
+            "#c4b5fd",
+            weight=QtGui.QFont.Weight.DemiBold,
+        )
+        self._boolean_format = _build_text_format(
+            "#fde68a",
+            weight=QtGui.QFont.Weight.DemiBold,
+        )
+        self._number_format = _build_text_format("#fdba74")
+        self._string_format = _build_text_format("#86efac")
+        self._operator_format = _build_text_format("#f9a8d4")
+        self._bracket_formats = tuple(
+            _build_text_format(color, weight=QtGui.QFont.Weight.Bold)
+            for color in _BRACKET_COLORS
+        )
+
+    def highlightBlock(self, text: str) -> None:
+        nesting_depth, string_state = _unpack_highlighter_state(self.previousBlockState())
+        index = 0
+
+        if string_state != _STRING_STATE_NONE:
+            quote_character = "'" if string_state == _STRING_STATE_SINGLE else '"'
+            index, string_state = self._highlight_string(
+                text,
+                0,
+                quote_character,
+                has_opening_quote=False,
+            )
+            self.setFormat(0, index, self._string_format)
+            if string_state != _STRING_STATE_NONE:
+                self.setCurrentBlockState(
+                    _pack_highlighter_state(nesting_depth, string_state)
+                )
+                return
+
+        while index < len(text):
+            character = text[index]
+
+            if character.isspace():
+                index += 1
+                continue
+
+            if character in ("'", '"'):
+                end_index, string_state = self._highlight_string(
+                    text,
+                    index,
+                    character,
+                    has_opening_quote=True,
+                )
+                self.setFormat(index, end_index - index, self._string_format)
+                if string_state != _STRING_STATE_NONE:
+                    self.setCurrentBlockState(
+                        _pack_highlighter_state(nesting_depth, string_state)
+                    )
+                    return
+                index = end_index
+                continue
+
+            if character.isalpha() or character == "_":
+                token_start = index
+                index += 1
+                while index < len(text) and _is_identifier_character(text[index]):
+                    index += 1
+
+                identifier = text[token_start:index]
+                if identifier in _SCRIPT_KEYWORDS:
+                    self.setFormat(token_start, index - token_start, self._keyword_format)
+                    continue
+                if identifier in _SCRIPT_BOOLEANS:
+                    self.setFormat(token_start, index - token_start, self._boolean_format)
+                    continue
+
+                token_format = (
+                    self._function_format
+                    if identifier in self._function_names
+                    and self._next_non_whitespace_character(text, index) == "("
+                    else self._identifier_format
+                )
+                self.setFormat(token_start, index - token_start, token_format)
+                continue
+
+            if character.isdigit():
+                end_index = self._scan_number(text, index)
+                self.setFormat(index, end_index - index, self._number_format)
+                index = end_index
+                continue
+
+            if character in _OPENING_BRACKETS:
+                self.setFormat(
+                    index,
+                    1,
+                    self._bracket_formats[nesting_depth % len(self._bracket_formats)],
+                )
+                nesting_depth += 1
+                index += 1
+                continue
+
+            if character in _CLOSING_BRACKETS:
+                nesting_depth = max(0, nesting_depth - 1)
+                self.setFormat(
+                    index,
+                    1,
+                    self._bracket_formats[nesting_depth % len(self._bracket_formats)],
+                )
+                index += 1
+                continue
+
+            operator_length = self._operator_length(text, index)
+            if operator_length > 0:
+                self.setFormat(index, operator_length, self._operator_format)
+                index += operator_length
+                continue
+
+            if character == ",":
+                self.setFormat(index, 1, self._operator_format)
+                index += 1
+                continue
+
+            index += 1
+
+        self.setCurrentBlockState(_pack_highlighter_state(nesting_depth, _STRING_STATE_NONE))
+
+    def _highlight_string(
+        self,
+        text: str,
+        start_index: int,
+        quote_character: str,
+        *,
+        has_opening_quote: bool,
+    ) -> tuple[int, int]:
+        index = start_index + (1 if has_opening_quote else 0)
+        is_escaped = False
+
+        while index < len(text):
+            character = text[index]
+            if is_escaped:
+                is_escaped = False
+            elif character == "\\":
+                is_escaped = True
+            elif character == quote_character:
+                return index + 1, _STRING_STATE_NONE
+            index += 1
+
+        string_state = (
+            _STRING_STATE_SINGLE
+            if quote_character == "'"
+            else _STRING_STATE_DOUBLE
+        )
+        return len(text), string_state
+
+    def _next_non_whitespace_character(self, text: str, start_index: int) -> str:
+        index = start_index
+        while index < len(text):
+            if not text[index].isspace():
+                return text[index]
+            index += 1
+        return ""
+
+    def _scan_number(self, text: str, start_index: int) -> int:
+        index = start_index
+        while index < len(text) and text[index].isdigit():
+            index += 1
+
+        if index + 1 < len(text) and text[index] == "." and text[index + 1].isdigit():
+            index += 1
+            while index < len(text) and text[index].isdigit():
+                index += 1
+
+        if index < len(text) and text[index] in ("e", "E"):
+            exponent_index = index + 1
+            if exponent_index < len(text) and text[exponent_index] in ("+", "-"):
+                exponent_index += 1
+            if exponent_index < len(text) and text[exponent_index].isdigit():
+                index = exponent_index + 1
+                while index < len(text) and text[index].isdigit():
+                    index += 1
+
+        return index
+
+    def _operator_length(self, text: str, start_index: int) -> int:
+        for operator in ("<=", ">=", "==", "!="):
+            if text.startswith(operator, start_index):
+                return len(operator)
+
+        return 1 if text[start_index] in "+-*/%<>=" else 0
 
 
 class _AutocompleteDelegate(QtWidgets.QStyledItemDelegate):
@@ -263,9 +519,9 @@ class _AutocompleteDelegate(QtWidgets.QStyledItemDelegate):
         subtitle = index.data(self.FULL_NAME_ROLE) or ""
 
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, QtGui.QColor("#dbeafe"))
+            painter.fillRect(option.rect, QtGui.QColor(_SCRIPT_EDITOR_SELECTION))
         else:
-            painter.fillRect(option.rect, QtGui.QColor("#ffffff"))
+            painter.fillRect(option.rect, QtGui.QColor(_SCRIPT_EDITOR_SURFACE))
 
         title_rect = option.rect.adjusted(12, 7, -12, -20)
         subtitle_rect = option.rect.adjusted(12, 28, -12, -6)
@@ -276,7 +532,7 @@ class _AutocompleteDelegate(QtWidgets.QStyledItemDelegate):
         subtitle_font.setPointSize(max(8, subtitle_font.pointSize() - 1))
 
         painter.setFont(title_font)
-        painter.setPen(QtGui.QColor("#0f172a"))
+        painter.setPen(QtGui.QColor(_SCRIPT_EDITOR_TEXT))
         painter.drawText(
             title_rect,
             QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
@@ -284,7 +540,7 @@ class _AutocompleteDelegate(QtWidgets.QStyledItemDelegate):
         )
 
         painter.setFont(subtitle_font)
-        painter.setPen(QtGui.QColor("#64748b"))
+        painter.setPen(QtGui.QColor(_SCRIPT_EDITOR_MUTED_TEXT))
         painter.drawText(
             subtitle_rect,
             QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
@@ -336,29 +592,29 @@ class _AutocompletePopup(QtWidgets.QFrame):
         layout.addWidget(self._list_widget)
 
         self.setStyleSheet(
-            """
-            QFrame#scriptAutocompletePopup {
-                background: white;
-                border: 1px solid #cbd5e1;
+            f"""
+            QFrame#scriptAutocompletePopup {{
+                background: {_SCRIPT_EDITOR_SURFACE};
+                border: 1px solid {_SCRIPT_EDITOR_BORDER};
                 border-radius: 8px;
-            }
-            QLabel {
-                border-bottom: 1px solid #e2e8f0;
+            }}
+            QLabel {{
+                border-bottom: 1px solid {_SCRIPT_EDITOR_BORDER};
                 padding: 10px 12px;
-                background: #f8fafc;
-                color: #0f172a;
-            }
-            QListWidget {
+                background: {_SCRIPT_EDITOR_SURFACE};
+                color: {_SCRIPT_EDITOR_TEXT};
+            }}
+            QListWidget {{
                 background: transparent;
                 border: none;
                 outline: none;
                 padding: 4px 0;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 border: none;
                 margin: 0;
                 padding: 0;
-            }
+            }}
             """
         )
 
@@ -457,6 +713,40 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
         self._completion_context: _CompletionContext | None = None
         self._autocomplete_popup = _AutocompletePopup(popup_parent)
         self._autocomplete_popup.suggestion_selected.connect(self._insert_suggestion)
+        self._syntax_highlighter = _ConditionScriptHighlighter(
+            self.document(),
+            tuple(self._function_definitions),
+        )
+
+        editor_font = QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont
+        )
+        editor_font.setPointSize(max(11, editor_font.pointSize()))
+        self.setFont(editor_font)
+        self.document().setDocumentMargin(10)
+
+        palette = self.palette()
+        palette.setColor(
+            QtGui.QPalette.ColorRole.Base,
+            QtGui.QColor(_SCRIPT_EDITOR_BACKGROUND),
+        )
+        palette.setColor(
+            QtGui.QPalette.ColorRole.Text,
+            QtGui.QColor(_SCRIPT_EDITOR_TEXT),
+        )
+        palette.setColor(
+            QtGui.QPalette.ColorRole.PlaceholderText,
+            QtGui.QColor(_SCRIPT_EDITOR_PLACEHOLDER),
+        )
+        palette.setColor(
+            QtGui.QPalette.ColorRole.Highlight,
+            QtGui.QColor(_SCRIPT_EDITOR_SELECTION),
+        )
+        palette.setColor(
+            QtGui.QPalette.ColorRole.HighlightedText,
+            QtGui.QColor(_SCRIPT_EDITOR_TEXT),
+        )
+        self.setPalette(palette)
 
         self.textChanged.connect(self._refresh_editor_assistance)
         self.cursorPositionChanged.connect(self._refresh_editor_assistance)
@@ -607,30 +897,35 @@ class ConditionScriptBox(QtWidgets.QFrame):
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMinimumWidth(320)
         self.setStyleSheet(
-            """
-            QFrame#conditionScriptPanel {
+            f"""
+            QFrame#conditionScriptPanel {{
                 background: #f8fafc;
                 border-left: 1px solid #dbe4ee;
-            }
-            QLabel#scriptTitle {
+            }}
+            QLabel#scriptTitle {{
                 color: #0f172a;
                 font-size: 16px;
                 font-weight: 600;
-            }
-            QLabel#scriptHelp {
+            }}
+            QLabel#scriptHelp {{
                 color: #475569;
-            }
-            QLabel#scriptStatus {
+            }}
+            QLabel#scriptStatus {{
                 padding-top: 4px;
-            }
-            QPlainTextEdit {
-                background: white;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                color: #111827;
-                selection-background-color: #bfdbfe;
-            }
-            QPushButton {
+            }}
+            QPlainTextEdit {{
+                background: {_SCRIPT_EDITOR_BACKGROUND};
+                border: 1px solid {_SCRIPT_EDITOR_BORDER};
+                border-radius: 8px;
+                color: {_SCRIPT_EDITOR_TEXT};
+                selection-background-color: {_SCRIPT_EDITOR_SELECTION};
+                selection-color: {_SCRIPT_EDITOR_TEXT};
+            }}
+            QPlainTextEdit:focus {{
+                border: 1px solid {_SCRIPT_EDITOR_FOCUS_BORDER};
+                border-radius: 8px;
+            }}
+            QPushButton {{
                 background: #2563eb;
                 border: none;
                 border-radius: 6px;
@@ -638,13 +933,13 @@ class ConditionScriptBox(QtWidgets.QFrame):
                 font-weight: 600;
                 min-height: 36px;
                 padding: 0 14px;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background: #1d4ed8;
-            }
-            QPushButton:pressed {
+            }}
+            QPushButton:pressed {{
                 background: #1e40af;
-            }
+            }}
             """
         )
 
