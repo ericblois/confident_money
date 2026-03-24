@@ -9,7 +9,7 @@ if __name__ == "__main__":
     from chart import DataChart
     from FMP.hourly_data import fmp_get_hourly_dataframe
 
-    symbol = "SPY"
+    symbol = "AAPL"
     start_date = datetime(2000, 1, 1)
     end_date = datetime.now()
 

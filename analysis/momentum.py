@@ -9,6 +9,21 @@ import pandas as pd
 
 from FMP.company_profile import fmp_get_company_profile
 from FMP.hourly_data import fmp_get_hourly_dataframe
+from analysis.features import (
+    add_breakout_distance,
+    add_distance_to_col,
+    add_log_return,
+    add_momentum,
+    add_range_position,
+    add_realized_vol,
+    add_rel_momentum,
+    add_rel_return,
+    add_rel_trend_r2,
+    add_rel_trend_slope,
+    add_trend_r2,
+    add_trend_slope,
+    add_vwap,
+)
 
 
 DEFAULT_MARKET_SYMBOL = "SPY"
@@ -187,9 +202,107 @@ def add_hourly_momentum_columns(
         prepared_dataframe["close"] * prepared_dataframe["volume"]
     )
 
-    _add_vwap_features(prepared_dataframe, bars_per_day, vwap_days)
+    for trading_days in vwap_days:
+        window = max(1, int(trading_days) * bars_per_day)
+        vwap_col = f"vwap_{trading_days}d"
+        add_vwap(
+            prepared_dataframe,
+            window,
+            output_col=vwap_col,
+            min_periods=window,
+        )
+        add_distance_to_col(
+            prepared_dataframe,
+            "close",
+            vwap_col,
+            output_col=f"distance_to_vwap_{trading_days}d",
+        )
+
     _merge_benchmark_frames(prepared_dataframe, resolved_benchmark_frames)
-    _add_horizon_features(prepared_dataframe, lookback_windows, resolved_benchmark_frames)
+    for label, window in lookback_windows.items():
+        log_return_col = f"log_return_{label}"
+        realized_vol_col = f"realized_vol_{label}"
+
+        add_log_return(
+            prepared_dataframe,
+            "log_close",
+            window,
+            output_col=log_return_col,
+        )
+        add_realized_vol(
+            prepared_dataframe,
+            "log_return_1h",
+            window,
+            output_col=realized_vol_col,
+            min_periods=window,
+        )
+        add_momentum(
+            prepared_dataframe,
+            log_return_col,
+            realized_vol_col,
+            output_col=f"momentum_{label}",
+        )
+        add_trend_slope(
+            prepared_dataframe,
+            "log_close",
+            window,
+            output_col=f"trend_slope_{label}",
+        )
+        add_trend_r2(
+            prepared_dataframe,
+            "log_close",
+            window,
+            output_col=f"trend_r2_{label}",
+        )
+        add_breakout_distance(
+            prepared_dataframe,
+            "close",
+            window,
+            output_col=f"breakout_distance_{label}",
+            min_periods=window,
+        )
+        add_range_position(
+            prepared_dataframe,
+            "close",
+            window,
+            output_col=f"range_position_{label}",
+            min_periods=window,
+        )
+
+        for benchmark_frame in resolved_benchmark_frames:
+            benchmark_name = benchmark_frame.name
+            rel_return_col = f"{benchmark_name}_rel_return_{label}"
+
+            add_rel_return(
+                prepared_dataframe,
+                log_return_col,
+                f"{benchmark_name}_log_close",
+                window,
+                output_col=rel_return_col,
+            )
+            add_rel_momentum(
+                prepared_dataframe,
+                rel_return_col,
+                "log_return_1h",
+                f"{benchmark_name}_log_return_1h",
+                window,
+                output_col=f"{benchmark_name}_rel_momentum_{label}",
+                min_periods=window,
+            )
+            add_rel_trend_slope(
+                prepared_dataframe,
+                "log_close",
+                f"{benchmark_name}_log_close",
+                window,
+                output_col=f"{benchmark_name}_rel_trend_slope_{label}",
+            )
+            add_rel_trend_r2(
+                prepared_dataframe,
+                "log_close",
+                f"{benchmark_name}_log_close",
+                window,
+                output_col=f"{benchmark_name}_rel_trend_r2_{label}",
+            )
 
     return prepared_dataframe
 
@@ -297,25 +410,6 @@ def _filter_to_requested_range(
     ].reset_index(drop=True)
 
 
-def _add_vwap_features(
-    dataframe: pd.DataFrame,
-    bars_per_day: int,
-    vwap_days: Sequence[int],
-) -> None:
-    price_volume = dataframe["close"] * dataframe["volume"]
-
-    for trading_days in vwap_days:
-        window = max(1, int(trading_days) * bars_per_day)
-        rolling_volume = dataframe["volume"].rolling(window, min_periods=window).sum()
-        rolling_vwap = price_volume.rolling(window, min_periods=window).sum() / (
-            rolling_volume.replace(0.0, np.nan)
-        )
-        dataframe[f"vwap_{trading_days}d"] = rolling_vwap
-        dataframe[f"distance_to_vwap_{trading_days}d"] = np.log(
-            dataframe["close"] / rolling_vwap
-        )
-
-
 def _merge_benchmark_frames(
     dataframe: pd.DataFrame,
     benchmark_frames: Sequence[BenchmarkFrame],
@@ -332,115 +426,3 @@ def _merge_benchmark_frames(
             dataframe[target_column] = dataframe["timestamp"].map(
                 prepared_benchmark[source_column]
             )
-
-
-def _add_horizon_features(
-    dataframe: pd.DataFrame,
-    lookback_windows: Mapping[str, int],
-    benchmark_frames: Sequence[BenchmarkFrame],
-) -> None:
-    for label, window in lookback_windows.items():
-        realized_volatility = dataframe["log_return_1h"].rolling(
-            window,
-            min_periods=window,
-        ).std() * np.sqrt(window)
-        trend_slope, trend_r_squared = _rolling_trend_stats(
-            dataframe["log_close"],
-            window,
-        )
-        prior_window_high = dataframe["close"].shift(1).rolling(
-            window,
-            min_periods=window,
-        ).max()
-        prior_window_low = dataframe["close"].shift(1).rolling(
-            window,
-            min_periods=window,
-        ).min()
-
-        dataframe[f"log_return_{label}"] = dataframe["log_close"].diff(window)
-        dataframe[f"realized_vol_{label}"] = realized_volatility
-        dataframe[f"momentum_{label}"] = (
-            dataframe[f"log_return_{label}"] / realized_volatility
-        )
-        dataframe[f"trend_slope_{label}"] = trend_slope
-        dataframe[f"trend_r2_{label}"] = trend_r_squared
-        dataframe[f"breakout_distance_{label}"] = np.log(
-            dataframe["close"] / prior_window_high
-        )
-        dataframe[f"range_position_{label}"] = (
-            (dataframe["close"] - prior_window_low)
-            / (prior_window_high - prior_window_low).replace(0.0, np.nan)
-        )
-
-        for benchmark_frame in benchmark_frames:
-            _add_relative_horizon_features(
-                dataframe,
-                benchmark_frame.name,
-                label,
-                window,
-            )
-
-
-def _add_relative_horizon_features(
-    dataframe: pd.DataFrame,
-    benchmark_name: str,
-    label: str,
-    window: int,
-) -> None:
-    benchmark_log_close_column = f"{benchmark_name}_log_close"
-    benchmark_log_return_column = f"{benchmark_name}_log_return_1h"
-    if benchmark_log_close_column not in dataframe.columns:
-        return
-
-    relative_log_spread = dataframe["log_close"] - dataframe[benchmark_log_close_column]
-    relative_trend_slope, relative_trend_r_squared = _rolling_trend_stats(
-        relative_log_spread,
-        window,
-    )
-    benchmark_log_return = dataframe[benchmark_log_close_column].diff(window)
-    tracking_volatility = (
-        (dataframe["log_return_1h"] - dataframe[benchmark_log_return_column])
-        .rolling(window, min_periods=window)
-        .std()
-        * np.sqrt(window)
-    )
-
-    dataframe[f"{benchmark_name}_relative_return_{label}"] = (
-        dataframe[f"log_return_{label}"] - benchmark_log_return
-    )
-    dataframe[f"{benchmark_name}_relative_momentum_{label}"] = (
-        dataframe[f"{benchmark_name}_relative_return_{label}"] / tracking_volatility
-    )
-    dataframe[f"{benchmark_name}_relative_trend_slope_{label}"] = relative_trend_slope
-    dataframe[f"{benchmark_name}_relative_trend_r2_{label}"] = relative_trend_r_squared
-
-
-# Fixed-window regression can be vectorized because every rolling fit uses the same
-# x-axis: 0..window-1. That keeps the trend features fast and easy to reuse.
-def _rolling_trend_stats(series: pd.Series, window: int) -> tuple[pd.Series, pd.Series]:
-    if window < 2:
-        empty_series = pd.Series(np.nan, index=series.index, dtype=float)
-        return empty_series, empty_series
-
-    y_values = pd.to_numeric(series, errors="coerce").astype(float)
-    global_index = pd.Series(np.arange(len(y_values), dtype=float), index=series.index)
-
-    sum_y = y_values.rolling(window, min_periods=window).sum()
-    sum_y_squared = y_values.pow(2).rolling(window, min_periods=window).sum()
-    sum_index_y = (y_values * global_index).rolling(window, min_periods=window).sum()
-
-    sum_x = window * (window - 1) / 2.0
-    sum_x_squared = (window - 1) * window * (2 * window - 1) / 6.0
-    x_variance_term = (window * sum_x_squared) - (sum_x**2)
-
-    window_start = global_index - (window - 1)
-    sum_xy = sum_index_y - (window_start * sum_y)
-    covariance_term = (window * sum_xy) - (sum_x * sum_y)
-    y_variance_term = (window * sum_y_squared) - (sum_y**2)
-
-    slope = covariance_term / x_variance_term
-    denominator = np.sqrt(x_variance_term * y_variance_term.clip(lower=0.0))
-    correlation = covariance_term / denominator.replace(0.0, np.nan)
-    r_squared = correlation.clip(-1.0, 1.0).pow(2)
-
-    return slope, r_squared
