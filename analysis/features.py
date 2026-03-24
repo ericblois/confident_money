@@ -4,28 +4,75 @@ import numpy as np
 import pandas as pd
 
 
+def calc_log_value(dataframe: pd.DataFrame, col: str) -> pd.Series:
+    """Return the natural log of a numeric dataframe column."""
+    source_series = _numeric_column(dataframe, col)
+    return np.log(source_series.where(source_series > 0))
+
+
+def add_log_value(
+    dataframe: pd.DataFrame,
+    col: str,
+    output_col: str | None = None,
+) -> None:
+    dataframe[output_col or f"log_{col}"] = calc_log_value(dataframe, col)
+
+
+def calc_mv_avg(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+    min_periods: int = 1,
+) -> pd.Series:
+    """Return a rolling moving average based on an existing dataframe column."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _positive_int(min_periods, name="min_periods")
+    source_series = _numeric_column(dataframe, col)
+    return source_series.rolling(
+        window=resolved_window,
+        min_periods=resolved_min_periods,
+    ).mean()
+
+
 def add_mv_avg(
     dataframe: pd.DataFrame,
     col: str,
     window: int,
     min_periods: int = 1,
 ) -> None:
-    """Add a rolling moving average column based on an existing dataframe column.
-
-    By default the new column is named `"{col}_ma{window}"`.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-    if min_periods <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    dataframe[f"{col}_ma{window}"] = source_series.rolling(
-        window=window,
+    dataframe[f"{col}_ma{window}"] = calc_mv_avg(
+        dataframe,
+        col,
+        window,
         min_periods=min_periods,
-    ).mean()
+    )
+
+
+def calc_vwap(
+    dataframe: pd.DataFrame,
+    window: int,
+    price_col: str = "close",
+    volume_col: str = "volume",
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Return a rolling volume-weighted average price series."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _resolved_min_periods(
+        min_periods,
+        default_value=resolved_window,
+    )
+    price_series = _numeric_column(dataframe, price_col)
+    volume_series = _numeric_column(dataframe, volume_col)
+    rolling_volume = volume_series.rolling(
+        resolved_window,
+        min_periods=resolved_min_periods,
+    ).sum()
+    return (
+        (price_series * volume_series)
+        .rolling(resolved_window, min_periods=resolved_min_periods)
+        .sum()
+        / rolling_volume.replace(0.0, np.nan)
+    )
 
 
 def add_vwap(
@@ -36,29 +83,24 @@ def add_vwap(
     output_col: str | None = None,
     min_periods: int | None = None,
 ) -> None:
-    """Add a volume-weighted average price column from existing price and volume columns.
-
-    The calculation uses a rolling window and writes to `output_col` or a default name.
-    """
-    if price_col not in dataframe.columns:
-        raise ValueError(f"Column '{price_col}' not found in the dataframe.")
-    if volume_col not in dataframe.columns:
-        raise ValueError(f"Column '{volume_col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    price_series = pd.to_numeric(dataframe[price_col], errors="coerce")
-    volume_series = pd.to_numeric(dataframe[volume_col], errors="coerce")
-    price_volume = price_series * volume_series
-    min_per = window if min_periods is None else min_periods
-    if min_per <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    rolling_volume = volume_series.rolling(window, min_periods=min_per).sum()
-    dataframe[output_col or f"{price_col}_vwap{window}"] = (
-        price_volume.rolling(window, min_periods=min_per).sum()
-        / rolling_volume.replace(0.0, np.nan)
+    dataframe[output_col or f"{price_col}_vwap{window}"] = calc_vwap(
+        dataframe,
+        window,
+        price_col=price_col,
+        volume_col=volume_col,
+        min_periods=min_periods,
     )
+
+
+def calc_distance_to_col(
+    dataframe: pd.DataFrame,
+    col: str,
+    reference_col: str,
+) -> pd.Series:
+    """Return the log-distance between one dataframe column and a reference column."""
+    source_series = _numeric_column(dataframe, col)
+    reference_series = _numeric_column(dataframe, reference_col)
+    return np.log(source_series / reference_series)
 
 
 def add_distance_to_col(
@@ -67,20 +109,22 @@ def add_distance_to_col(
     reference_col: str,
     output_col: str | None = None,
 ) -> None:
-    """Add a log-distance column between one dataframe column and a reference column.
-
-    This is computed as `log(col / reference_col)`.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if reference_col not in dataframe.columns:
-        raise ValueError(f"Column '{reference_col}' not found in the dataframe.")
-
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    reference_series = pd.to_numeric(dataframe[reference_col], errors="coerce")
-    dataframe[output_col or f"{col}_distance_to_{reference_col}"] = np.log(
-        source_series / reference_series
+    dataframe[output_col or f"{col}_distance_to_{reference_col}"] = calc_distance_to_col(
+        dataframe,
+        col,
+        reference_col,
     )
+
+
+def calc_log_return(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+) -> pd.Series:
+    """Return a lookback return series by differencing over `window` rows."""
+    resolved_window = _positive_int(window, name="window")
+    source_series = _numeric_column(dataframe, col)
+    return source_series.diff(resolved_window)
 
 
 def add_log_return(
@@ -89,17 +133,30 @@ def add_log_return(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a lookback return column by differencing an existing series over `window` rows.
+    dataframe[output_col or f"{col}_log_return{window}"] = calc_log_return(
+        dataframe,
+        col,
+        window,
+    )
 
-    This is typically used with log-price columns to produce log returns.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
 
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    dataframe[output_col or f"{col}_log_return{window}"] = source_series.diff(window)
+def calc_realized_vol(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Return rolling realized volatility from an existing return series."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _resolved_min_periods(
+        min_periods,
+        default_value=resolved_window,
+    )
+    source_series = _numeric_column(dataframe, col)
+    return (
+        source_series.rolling(resolved_window, min_periods=resolved_min_periods).std()
+        * np.sqrt(resolved_window)
+    )
 
 
 def add_realized_vol(
@@ -109,24 +166,23 @@ def add_realized_vol(
     output_col: str | None = None,
     min_periods: int | None = None,
 ) -> None:
-    """Add a rolling realized volatility column from an existing return series.
-
-    The result is the rolling standard deviation scaled by `sqrt(window)`.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    resolved_min_periods = window if min_periods is None else min_periods
-    if resolved_min_periods <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    dataframe[output_col or f"{col}_realized_vol{window}"] = (
-        source_series.rolling(window, min_periods=resolved_min_periods).std()
-        * np.sqrt(window)
+    dataframe[output_col or f"{col}_realized_vol{window}"] = calc_realized_vol(
+        dataframe,
+        col,
+        window,
+        min_periods=min_periods,
     )
+
+
+def calc_momentum(
+    dataframe: pd.DataFrame,
+    return_col: str,
+    volatility_col: str,
+) -> pd.Series:
+    """Return momentum by dividing a return column by a volatility column."""
+    return_series = _numeric_column(dataframe, return_col)
+    volatility_series = _numeric_column(dataframe, volatility_col)
+    return return_series / volatility_series.replace(0.0, np.nan)
 
 
 def add_momentum(
@@ -135,20 +191,23 @@ def add_momentum(
     volatility_col: str,
     output_col: str | None = None,
 ) -> None:
-    """Add a momentum column by dividing a return column by a volatility column.
-
-    Zero volatility values are treated as missing to avoid divide-by-zero output.
-    """
-    if return_col not in dataframe.columns:
-        raise ValueError(f"Column '{return_col}' not found in the dataframe.")
-    if volatility_col not in dataframe.columns:
-        raise ValueError(f"Column '{volatility_col}' not found in the dataframe.")
-
-    return_series = pd.to_numeric(dataframe[return_col], errors="coerce")
-    volatility_series = pd.to_numeric(dataframe[volatility_col], errors="coerce")
-    dataframe[output_col or f"{return_col}_momentum"] = (
-        return_series / volatility_series.replace(0.0, np.nan)
+    dataframe[output_col or f"{return_col}_momentum"] = calc_momentum(
+        dataframe,
+        return_col,
+        volatility_col,
     )
+
+
+def calc_trend_slope(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+) -> pd.Series:
+    """Return a rolling trend slope series for an existing column."""
+    resolved_window = _positive_int(window, name="window")
+    source_series = _numeric_column(dataframe, col)
+    slope, _ = _rolling_trend_stats(source_series, resolved_window)
+    return slope
 
 
 def add_trend_slope(
@@ -157,18 +216,23 @@ def add_trend_slope(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a rolling trend slope column for an existing series.
+    dataframe[output_col or f"{col}_trend_slope{window}"] = calc_trend_slope(
+        dataframe,
+        col,
+        window,
+    )
 
-    The slope comes from a fixed-window linear regression over each rolling window.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
 
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    slope, _ = _rolling_trend_stats(source_series, window)
-    dataframe[output_col or f"{col}_trend_slope{window}"] = slope
+def calc_trend_r2(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+) -> pd.Series:
+    """Return a rolling trend R-squared series for an existing column."""
+    resolved_window = _positive_int(window, name="window")
+    source_series = _numeric_column(dataframe, col)
+    _, r_squared = _rolling_trend_stats(source_series, resolved_window)
+    return r_squared
 
 
 def add_trend_r2(
@@ -177,18 +241,31 @@ def add_trend_r2(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a rolling trend R-squared column for an existing series.
+    dataframe[output_col or f"{col}_trend_r2{window}"] = calc_trend_r2(
+        dataframe,
+        col,
+        window,
+    )
 
-    This measures how well a straight-line trend fits each rolling window.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
 
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    _, r_squared = _rolling_trend_stats(source_series, window)
-    dataframe[output_col or f"{col}_trend_r2{window}"] = r_squared
+def calc_breakout_distance(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Return the log-distance to the prior rolling high."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _resolved_min_periods(
+        min_periods,
+        default_value=resolved_window,
+    )
+    source_series = _numeric_column(dataframe, col)
+    prior_window_high = source_series.shift(1).rolling(
+        resolved_window,
+        min_periods=resolved_min_periods,
+    ).max()
+    return np.log(source_series / prior_window_high)
 
 
 def add_breakout_distance(
@@ -198,27 +275,38 @@ def add_breakout_distance(
     output_col: str | None = None,
     min_periods: int | None = None,
 ) -> None:
-    """Add a breakout-distance column relative to the prior rolling high.
-
-    The value is computed as `log(col / prior_window_high)`.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    resolved_min_periods = window if min_periods is None else min_periods
-    if resolved_min_periods <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    prior_window_high = source_series.shift(1).rolling(
+    dataframe[output_col or f"{col}_breakout_distance{window}"] = calc_breakout_distance(
+        dataframe,
+        col,
         window,
+        min_periods=min_periods,
+    )
+
+
+def calc_range_position(
+    dataframe: pd.DataFrame,
+    col: str,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Return a normalized range position within the prior rolling high-low range."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _resolved_min_periods(
+        min_periods,
+        default_value=resolved_window,
+    )
+    source_series = _numeric_column(dataframe, col)
+    prior_window_high = source_series.shift(1).rolling(
+        resolved_window,
         min_periods=resolved_min_periods,
     ).max()
-    dataframe[output_col or f"{col}_breakout_distance{window}"] = np.log(
-        source_series / prior_window_high
-    )
+    prior_window_low = source_series.shift(1).rolling(
+        resolved_window,
+        min_periods=resolved_min_periods,
+    ).min()
+    return (source_series - prior_window_low) / (
+        prior_window_high - prior_window_low
+    ).replace(0.0, np.nan)
 
 
 def add_range_position(
@@ -228,32 +316,25 @@ def add_range_position(
     output_col: str | None = None,
     min_periods: int | None = None,
 ) -> None:
-    """Add a normalized range-position column within the prior rolling high-low range.
-
-    Values near 0 are close to the prior low and values near 1 are close to the prior high.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    resolved_min_periods = window if min_periods is None else min_periods
-    if resolved_min_periods <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    prior_window_high = source_series.shift(1).rolling(
+    dataframe[output_col or f"{col}_range_position{window}"] = calc_range_position(
+        dataframe,
+        col,
         window,
-        min_periods=resolved_min_periods,
-    ).max()
-    prior_window_low = source_series.shift(1).rolling(
-        window,
-        min_periods=resolved_min_periods,
-    ).min()
-    dataframe[output_col or f"{col}_range_position{window}"] = (
-        (source_series - prior_window_low)
-        / (prior_window_high - prior_window_low).replace(0.0, np.nan)
+        min_periods=min_periods,
     )
+
+
+def calc_rel_return(
+    dataframe: pd.DataFrame,
+    return_col: str,
+    benchmark_col: str,
+    window: int,
+) -> pd.Series:
+    """Return relative return versus a benchmark lookback return."""
+    resolved_window = _positive_int(window, name="window")
+    return_series = _numeric_column(dataframe, return_col)
+    benchmark_series = _numeric_column(dataframe, benchmark_col)
+    return return_series - benchmark_series.diff(resolved_window)
 
 
 def add_rel_return(
@@ -263,22 +344,38 @@ def add_rel_return(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a relative return column by comparing an asset return to a benchmark lookback return.
-
-    The benchmark contribution is computed from `benchmark_col.diff(window)`.
-    """
-    if return_col not in dataframe.columns:
-        raise ValueError(f"Column '{return_col}' not found in the dataframe.")
-    if benchmark_col not in dataframe.columns:
-        raise ValueError(f"Column '{benchmark_col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    return_series = pd.to_numeric(dataframe[return_col], errors="coerce")
-    benchmark_series = pd.to_numeric(dataframe[benchmark_col], errors="coerce")
-    dataframe[output_col or f"{return_col}_rel_to_{benchmark_col}"] = (
-        return_series - benchmark_series.diff(window)
+    dataframe[output_col or f"{return_col}_rel_to_{benchmark_col}"] = calc_rel_return(
+        dataframe,
+        return_col,
+        benchmark_col,
+        window,
     )
+
+
+def calc_rel_momentum(
+    dataframe: pd.DataFrame,
+    rel_return_col: str,
+    return_col: str,
+    benchmark_return_col: str,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Return relative momentum scaled by rolling tracking volatility."""
+    resolved_window = _positive_int(window, name="window")
+    resolved_min_periods = _resolved_min_periods(
+        min_periods,
+        default_value=resolved_window,
+    )
+    rel_return_series = _numeric_column(dataframe, rel_return_col)
+    return_series = _numeric_column(dataframe, return_col)
+    benchmark_return_series = _numeric_column(dataframe, benchmark_return_col)
+    tracking_volatility = (
+        (return_series - benchmark_return_series)
+        .rolling(resolved_window, min_periods=resolved_min_periods)
+        .std()
+        * np.sqrt(resolved_window)
+    )
+    return rel_return_series / tracking_volatility.replace(0.0, np.nan)
 
 
 def add_rel_momentum(
@@ -290,38 +387,28 @@ def add_rel_momentum(
     output_col: str | None = None,
     min_periods: int | None = None,
 ) -> None:
-    """Add a relative momentum column by scaling relative return by tracking volatility.
-
-    Tracking volatility is based on the rolling spread between asset and benchmark returns.
-    """
-    if rel_return_col not in dataframe.columns:
-        raise ValueError(f"Column '{rel_return_col}' not found in the dataframe.")
-    if return_col not in dataframe.columns:
-        raise ValueError(f"Column '{return_col}' not found in the dataframe.")
-    if benchmark_return_col not in dataframe.columns:
-        raise ValueError(f"Column '{benchmark_return_col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
-
-    min_per = window if min_periods is None else min_periods
-    if min_per <= 0:
-        raise ValueError("min_periods must be greater than 0.")
-
-    rel_return_series = pd.to_numeric(dataframe[rel_return_col], errors="coerce")
-    return_series = pd.to_numeric(dataframe[return_col], errors="coerce")
-    benchmark_return_series = pd.to_numeric(
-        dataframe[benchmark_return_col],
-        errors="coerce",
+    dataframe[output_col or f"{rel_return_col}_momentum"] = calc_rel_momentum(
+        dataframe,
+        rel_return_col,
+        return_col,
+        benchmark_return_col,
+        window,
+        min_periods=min_periods,
     )
-    tracking_volatility = (
-        (return_series - benchmark_return_series)
-        .rolling(window, min_periods=min_per)
-        .std()
-        * np.sqrt(window)
-    )
-    dataframe[output_col or f"{rel_return_col}_momentum"] = (
-        rel_return_series / tracking_volatility.replace(0.0, np.nan)
-    )
+
+
+def calc_rel_trend_slope(
+    dataframe: pd.DataFrame,
+    col: str,
+    benchmark_col: str,
+    window: int,
+) -> pd.Series:
+    """Return a rolling trend slope for the spread between two series."""
+    resolved_window = _positive_int(window, name="window")
+    source_series = _numeric_column(dataframe, col)
+    benchmark_series = _numeric_column(dataframe, benchmark_col)
+    slope, _ = _rolling_trend_stats(source_series - benchmark_series, resolved_window)
+    return slope
 
 
 def add_rel_trend_slope(
@@ -331,21 +418,26 @@ def add_rel_trend_slope(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a rolling trend slope column for the spread between an asset and benchmark series.
+    dataframe[output_col or f"{col}_rel_trend_slope{window}"] = calc_rel_trend_slope(
+        dataframe,
+        col,
+        benchmark_col,
+        window,
+    )
 
-    This captures whether the asset is trending stronger or weaker than the benchmark.
-    """
-    if col not in dataframe.columns:
-        raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if benchmark_col not in dataframe.columns:
-        raise ValueError(f"Column '{benchmark_col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
 
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    benchmark_series = pd.to_numeric(dataframe[benchmark_col], errors="coerce")
-    slope, _ = _rolling_trend_stats(source_series - benchmark_series, window)
-    dataframe[output_col or f"{col}_rel_trend_slope{window}"] = slope
+def calc_rel_trend_r2(
+    dataframe: pd.DataFrame,
+    col: str,
+    benchmark_col: str,
+    window: int,
+) -> pd.Series:
+    """Return a rolling trend R-squared for the spread between two series."""
+    resolved_window = _positive_int(window, name="window")
+    source_series = _numeric_column(dataframe, col)
+    benchmark_series = _numeric_column(dataframe, benchmark_col)
+    _, r_squared = _rolling_trend_stats(source_series - benchmark_series, resolved_window)
+    return r_squared
 
 
 def add_rel_trend_r2(
@@ -355,21 +447,31 @@ def add_rel_trend_r2(
     window: int,
     output_col: str | None = None,
 ) -> None:
-    """Add a rolling trend R-squared column for the spread between an asset and benchmark series.
+    dataframe[output_col or f"{col}_rel_trend_r2{window}"] = calc_rel_trend_r2(
+        dataframe,
+        col,
+        benchmark_col,
+        window,
+    )
 
-    This measures how consistently the relative trend follows a straight line.
-    """
+
+def _numeric_column(dataframe: pd.DataFrame, col: str) -> pd.Series:
     if col not in dataframe.columns:
         raise ValueError(f"Column '{col}' not found in the dataframe.")
-    if benchmark_col not in dataframe.columns:
-        raise ValueError(f"Column '{benchmark_col}' not found in the dataframe.")
-    if window <= 0:
-        raise ValueError("window must be greater than 0.")
 
-    source_series = pd.to_numeric(dataframe[col], errors="coerce")
-    benchmark_series = pd.to_numeric(dataframe[benchmark_col], errors="coerce")
-    _, r_squared = _rolling_trend_stats(source_series - benchmark_series, window)
-    dataframe[output_col or f"{col}_rel_trend_r2{window}"] = r_squared
+    return pd.to_numeric(dataframe[col], errors="coerce")
+
+
+def _positive_int(value: int, *, name: str) -> int:
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+
+    return value
+
+
+def _resolved_min_periods(min_periods: int | None, *, default_value: int) -> int:
+    resolved_min_periods = default_value if min_periods is None else min_periods
+    return _positive_int(resolved_min_periods, name="min_periods")
 
 
 def _rolling_trend_stats(series: pd.Series, window: int) -> tuple[pd.Series, pd.Series]:

@@ -23,6 +23,8 @@ from analysis.features import (
     add_trend_r2,
     add_trend_slope,
     add_vwap,
+    calc_log_return,
+    calc_log_value,
 )
 
 
@@ -356,8 +358,12 @@ def _prepare_hourly_dataframe(hourly_dataframe: pd.DataFrame) -> pd.DataFrame:
     )
 
     prepared_dataframe["trading_day"] = prepared_dataframe["timestamp"].dt.normalize()
-    prepared_dataframe["log_close"] = np.log(prepared_dataframe["close"])
-    prepared_dataframe["log_return_1h"] = prepared_dataframe["log_close"].diff()
+    prepared_dataframe["log_close"] = calc_log_value(prepared_dataframe, "close")
+    prepared_dataframe["log_return_1h"] = calc_log_return(
+        prepared_dataframe,
+        "log_close",
+        1,
+    )
     return prepared_dataframe
 
 
