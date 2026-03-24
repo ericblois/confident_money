@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Generic, Literal, TypeVar
 
@@ -22,6 +23,7 @@ class AnyValue:
 
 KindT = TypeVar("KindT", covariant=True)
 ReturnT = TypeVar("ReturnT", covariant=True)
+type ScriptNameKind = Literal["function", "parameter"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,59 @@ STRING = ScriptType[StringValue]("string")
 ANY = ScriptType[AnyValue]("any")
 
 
+FUNCTION_DISPLAY_NAMES: dict[str, str] = {
+    "mv_avg": "Moving Average",
+    "moving_avg": "Moving Average",
+    "vwap": "Volume Weighted Average Price",
+    "distance": "Log Distance Between Series",
+    "log_return": "Log Return",
+    "vlt": "Realized Volatility",
+    "realized_vol": "Realized Volatility",
+    "momentum": "Momentum",
+    "trend_slope": "Trend Slope",
+    "trend_r2": "Trend R-Squared",
+    "breakout_distance": "Breakout Distance",
+    "range_position": "Range Position",
+    "rel_return": "Relative Return",
+    "rel_momentum": "Relative Momentum",
+    "rel_trend_slope": "Relative Trend Slope",
+    "rel_trend_r2": "Relative Trend R-Squared",
+}
+
+PARAMETER_DISPLAY_NAMES: dict[str, str] = {
+    "open": "Opening Price",
+    "high": "High Price",
+    "low": "Low Price",
+    "close": "Closing Price",
+    "source": "Source Series",
+    "left": "Left Series",
+    "right": "Right Series",
+    "benchmark": "Benchmark Series",
+    "return": "Return Series",
+    "rel_return": "Relative Return Series",
+    "volatility": "Volatility Series",
+    "price": "Price Series",
+    "volume": "Volume Series",
+    "window": "Lookback Window",
+    "min_periods": "Minimum Periods",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptAutocompleteEntry:
+    short_name: str
+    full_name: str
+    kind: ScriptNameKind
+
+    @property
+    def kind_label(self) -> str:
+        return "Function" if self.kind == "function" else "Parameter"
+
+    @property
+    def subtitle(self) -> str:
+        return f"{self.kind_label} • {self.full_name}"
+
+
 @dataclass(frozen=True, slots=True)
 class ParameterSpec:
     name: str
@@ -45,6 +100,10 @@ class ParameterSpec:
 
     def format_types(self) -> str:
         return " | ".join(script_type.name for script_type in self.accepted_types)
+
+    @property
+    def full_name(self) -> str:
+        return get_parameter_full_name(self.name)
 
 
 def parameter(name: str, *accepted_types: ScriptType[Any]) -> ParameterSpec:
@@ -100,6 +159,10 @@ class FunctionDefinition(Generic[ReturnT]):
 
     def format_signatures(self) -> str:
         return "; ".join(signature.format(self.name) for signature in self.signatures)
+
+    @property
+    def full_name(self) -> str:
+        return get_function_full_name(self.name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,3 +232,51 @@ class FunctionCallExpression(Expression[ReturnT]):
 type AnyExpression = Expression[Any]
 type ConditionExpression = Expression[BooleanValue]
 
+
+def _humanize_identifier(name: str) -> str:
+    return " ".join(part.upper() if part.isupper() else part.capitalize() for part in name.split("_"))
+
+
+def get_function_full_name(name: str) -> str:
+    return FUNCTION_DISPLAY_NAMES.get(name, _humanize_identifier(name))
+
+
+def get_parameter_full_name(name: str) -> str:
+    return PARAMETER_DISPLAY_NAMES.get(name, _humanize_identifier(name))
+
+
+def build_script_autocomplete_entries(
+    function_definitions: Iterable[FunctionDefinition[Any]],
+) -> tuple[ScriptAutocompleteEntry, ...]:
+    """Build a deduplicated autocomplete catalog from known functions and parameters."""
+
+    entries: dict[tuple[ScriptNameKind, str], ScriptAutocompleteEntry] = {}
+
+    for function_definition in function_definitions:
+        entries[("function", function_definition.name)] = ScriptAutocompleteEntry(
+            short_name=function_definition.name,
+            full_name=function_definition.full_name,
+            kind="function",
+        )
+
+        for function_signature in function_definition.signatures:
+            for parameter_spec in function_signature.parameters:
+                entries[("parameter", parameter_spec.name)] = ScriptAutocompleteEntry(
+                    short_name=parameter_spec.name,
+                    full_name=parameter_spec.full_name,
+                    kind="parameter",
+                )
+
+    for parameter_name in PARAMETER_DISPLAY_NAMES:
+        entries[("parameter", parameter_name)] = ScriptAutocompleteEntry(
+            short_name=parameter_name,
+            full_name=get_parameter_full_name(parameter_name),
+            kind="parameter",
+        )
+
+    return tuple(
+        sorted(
+            entries.values(),
+            key=lambda entry: (entry.kind != "function", entry.short_name.lower()),
+        )
+    )

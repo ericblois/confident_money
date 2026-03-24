@@ -6,7 +6,8 @@ if __name__ == "__main__":
     from datetime import datetime
 
     from analysis.momentum import add_hourly_momentum_columns
-    from chart import DataChart
+    from gui.chart_window import ChartWindow
+    from gui.chart import DataChart
     from FMP.hourly_data import fmp_get_hourly_dataframe
 
     symbol = "AAPL"
@@ -63,4 +64,5 @@ if __name__ == "__main__":
             pane="momentum",
             color="#7c3aed",
         )
-        chart.show()
+        window = ChartWindow(chart)
+        window.show()

@@ -82,6 +82,88 @@ class _ChartPane:
         return self.y_label or self.name.title()
 
 
+@dataclass(slots=True)
+class _ConditionRegionItem:
+    pane: _ChartPane
+    item: pg.LinearRegionItem
+
+
+def _estimate_plot_half_width(plot_x_values: np.ndarray, index: int) -> float:
+    gaps: list[float] = []
+
+    if index > 0 and np.isfinite(plot_x_values[index - 1]) and np.isfinite(plot_x_values[index]):
+        previous_gap = abs(float(plot_x_values[index] - plot_x_values[index - 1])) / 2.0
+        if previous_gap > 0:
+            gaps.append(previous_gap)
+
+    if (
+        index + 1 < plot_x_values.size
+        and np.isfinite(plot_x_values[index + 1])
+        and np.isfinite(plot_x_values[index])
+    ):
+        next_gap = abs(float(plot_x_values[index + 1] - plot_x_values[index])) / 2.0
+        if next_gap > 0:
+            gaps.append(next_gap)
+
+    return gaps[0] if gaps else 0.5
+
+
+def build_condition_region_ranges(
+    condition_mask: Sequence[bool],
+    plot_x_values: Sequence[float],
+) -> list[tuple[float, float]]:
+    """Return x-axis ranges that cover contiguous true segments."""
+
+    mask = np.asarray(condition_mask, dtype=bool)
+    plot_x = np.asarray(plot_x_values, dtype=float)
+
+    if mask.size != plot_x.size:
+        raise ValueError(
+            "Condition mask length must match the chart x-axis length: "
+            f"{mask.size} != {plot_x.size}"
+        )
+
+    if mask.size == 0:
+        return []
+
+    left_edges = np.empty(plot_x.size, dtype=float)
+    right_edges = np.empty(plot_x.size, dtype=float)
+
+    for index, center in enumerate(plot_x):
+        half_width = _estimate_plot_half_width(plot_x, index)
+
+        if index > 0 and np.isfinite(plot_x[index - 1]) and np.isfinite(center):
+            left_edge = float((plot_x[index - 1] + center) / 2.0)
+        else:
+            left_edge = float(center - half_width)
+
+        if index + 1 < plot_x.size and np.isfinite(plot_x[index + 1]) and np.isfinite(center):
+            right_edge = float((center + plot_x[index + 1]) / 2.0)
+        else:
+            right_edge = float(center + half_width)
+
+        left_edges[index] = min(left_edge, right_edge)
+        right_edges[index] = max(left_edge, right_edge)
+
+    visible_mask = mask & np.isfinite(plot_x)
+    regions: list[tuple[float, float]] = []
+    region_start: int | None = None
+
+    for index, is_true in enumerate(visible_mask):
+        if is_true and region_start is None:
+            region_start = index
+            continue
+
+        if not is_true and region_start is not None:
+            regions.append((left_edges[region_start], right_edges[index - 1]))
+            region_start = None
+
+    if region_start is not None:
+        regions.append((left_edges[region_start], right_edges[plot_x.size - 1]))
+
+    return regions
+
+
 # Axis and view helpers make the chart readable while keeping y-scaling tied to
 # the currently visible x-range.
 class _ChartDateAxisItem(pg.AxisItem):
@@ -208,6 +290,8 @@ class DataChart:
         self._hover_x_position: float | None = None
         self._active_hover_pane: _ChartPane | None = None
         self._mouse_proxy: pg.SignalProxy | None = None
+        self._default_plot_x = self._to_plot_x(self.data[self.x_column])
+        self._condition_region_items: list[_ConditionRegionItem] = []
 
         self._create_pane("main", y_label=self.y_label, height_ratio=3)
         if self.show_spikes:
@@ -543,6 +627,93 @@ class DataChart:
             raise ValueError(f"Unknown chart pane: {pane}")
         return self._pane_by_name[pane]
 
+    @property
+    def widget(self) -> pg.GraphicsLayoutWidget:
+        """Expose the chart widget so it can be embedded in other Qt windows."""
+
+        return self._layout_widget
+
+    @property
+    def application(self) -> QtWidgets.QApplication:
+        return self._app
+
+    @property
+    def owns_application(self) -> bool:
+        return self._owns_app
+
+    def refresh_view(self, *, auto_range: bool = False) -> None:
+        """Refresh pane ranges while optionally preserving the current x-zoom."""
+
+        for pane in self._panes:
+            if auto_range:
+                pane.plot_item.autoRange()
+            pane.view_box.refit_y_range()
+
+    def run_application(self) -> None:
+        """Start the Qt event loop when this chart created the QApplication."""
+
+        if self._owns_app:
+            self._app.exec()
+
+    def clear_condition_regions(self) -> "DataChart":
+        """Remove every highlighted condition range from the chart."""
+
+        while self._condition_region_items:
+            region = self._condition_region_items.pop()
+            region.pane.plot_item.removeItem(region.item)
+
+        return self
+
+    def set_condition_regions(
+        self,
+        condition: SeriesInput,
+        *,
+        color: str = "#22c55e",
+        opacity: float = 0.18,
+        panes: Sequence[str] | None = None,
+    ) -> int:
+        """Highlight contiguous x-ranges where a boolean condition is true."""
+
+        condition_mask = (
+            self._resolve_series(condition, name="condition mask")
+            .fillna(False)
+            .astype(bool)
+            .reset_index(drop=True)
+        )
+        region_ranges = build_condition_region_ranges(
+            condition_mask.to_numpy(dtype=bool, copy=False),
+            self._default_plot_x.to_numpy(dtype=float, copy=False),
+        )
+
+        self.clear_condition_regions()
+        if not region_ranges:
+            return 0
+
+        target_panes = (
+            [self._resolve_pane(pane_name) for pane_name in panes]
+            if panes is not None
+            else list(self._panes)
+        )
+        brush = self._build_condition_region_brush(color=color, opacity=opacity)
+        pen = self._build_condition_region_pen(color=color, opacity=opacity)
+
+        for pane in target_panes:
+            for x_min, x_max in region_ranges:
+                region_item = pg.LinearRegionItem(
+                    values=(x_min, x_max),
+                    orientation="vertical",
+                    brush=brush,
+                    pen=pen,
+                    movable=False,
+                )
+                region_item.setZValue(-5)
+                pane.plot_item.addItem(region_item, ignoreBounds=True)
+                self._condition_region_items.append(
+                    _ConditionRegionItem(pane=pane, item=region_item)
+                )
+
+        return len(region_ranges)
+
     def add_pane(
         self,
         name: str,
@@ -702,6 +873,28 @@ class DataChart:
             )
         )
 
+    def _build_condition_region_brush(
+        self,
+        *,
+        color: str,
+        opacity: float,
+    ) -> QtGui.QBrush:
+        fill_color = QtGui.QColor(color)
+        fill_color.setAlphaF(max(0.0, min(1.0, opacity)))
+        return pg.mkBrush(fill_color)
+
+    def _build_condition_region_pen(
+        self,
+        *,
+        color: str,
+        opacity: float,
+    ) -> QtGui.QPen:
+        border_color = QtGui.QColor(color)
+        border_color.setAlphaF(max(0.0, min(1.0, opacity * 1.4)))
+        pen = pg.mkPen(border_color, width=1.0)
+        pen.setCosmetic(True)
+        return pen
+
     def _ensure_window(self, *, width: int, height: int) -> QtWidgets.QMainWindow:
         if self._window is None:
             window = QtWidgets.QMainWindow()
@@ -718,10 +911,5 @@ class DataChart:
         window.show()
         window.raise_()
         window.activateWindow()
-
-        for pane in self._panes:
-            pane.plot_item.autoRange()
-            pane.view_box.refit_y_range()
-
-        if self._owns_app:
-            self._app.exec()
+        self.refresh_view(auto_range=True)
+        self.run_application()
