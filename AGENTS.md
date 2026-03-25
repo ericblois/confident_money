@@ -1,0 +1,4 @@
+- Keep code readable and efficient, and reduce complexity where possible.
+- Write concise but clear comments about what blocks of code do, at a higher level
+- The number of helper functions should try to be reduced, where helpers are only created when they contain at least 3 lines of code and are used multiple times elsewhere
+- Use the most efficient algorithms and data structures where possible, unless it introduces an unnecessary amount of complexity for the performance gain

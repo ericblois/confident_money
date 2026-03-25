@@ -212,6 +212,8 @@ class _ChartDateAxisItem(pg.AxisItem):
 class _AutoFitViewBox(pg.ViewBox):
     """Keep the y-axis fitted to the data visible in the current x-range."""
 
+    _HORIZONTAL_WHEEL_PAN_FRACTION = 0.12
+
     def __init__(self, *, vertical_fill_ratio: float = 0.9) -> None:
         super().__init__()
         self.setMouseEnabled(x=True, y=False)
@@ -223,6 +225,63 @@ class _AutoFitViewBox(pg.ViewBox):
 
     def register_series(self, x_values: pd.Series, y_values: pd.Series) -> None:
         self._series_data.append((x_values, y_values))
+
+    def wheelEvent(self, ev: Any, axis: int | None = None) -> None:
+        if axis != 1 and self.state["mouseEnabled"][0]:
+            pan_view = self._x_pan_target_view()
+            horizontal_pan = self._horizontal_wheel_pan_delta(
+                ev,
+                x_span=self._view_x_span(pan_view),
+                view_width=self._view_width(pan_view),
+                axis=axis,
+            )
+            if horizontal_pan is not None:
+                pan_view._resetTarget()
+                pan_view.translateBy(x=horizontal_pan)
+                ev.accept()
+                pan_view.sigRangeChangedManually.emit([True, False])
+                return
+
+        super().wheelEvent(ev, axis=axis)
+
+    def _x_pan_target_view(self) -> pg.ViewBox:
+        return self.linkedView(self.XAxis) or self
+
+    def _horizontal_wheel_pan_delta(
+        self,
+        ev: Any,
+        *,
+        x_span: float,
+        view_width: float,
+        axis: int | None = None,
+    ) -> float | None:
+        pixel_delta = ev.pixelDelta() if hasattr(ev, "pixelDelta") else None
+        if pixel_delta is not None:
+            pixel_x = float(pixel_delta.x())
+            pixel_y = float(pixel_delta.y())
+            if pixel_x and abs(pixel_x) >= abs(pixel_y):
+                return -x_span * (pixel_x / view_width)
+
+        if axis == 0 or (
+            hasattr(ev, "orientation")
+            and ev.orientation() == QtCore.Qt.Orientation.Horizontal
+        ):
+            wheel_delta = float(ev.delta())
+            if wheel_delta:
+                return -x_span * (wheel_delta / 120.0) * self._HORIZONTAL_WHEEL_PAN_FRACTION
+
+        return None
+
+    def _view_x_span(self, view: pg.ViewBox) -> float:
+        x_min, x_max = view.viewRange()[0]
+        span = abs(float(x_max - x_min))
+        return span if np.isfinite(span) and span > 0 else 1.0
+
+    def _view_width(self, view: pg.ViewBox) -> float:
+        width = float(view.sceneBoundingRect().width())
+        if width <= 0:
+            width = float(view.boundingRect().width())
+        return width if width > 0 else 1.0
 
     def refit_y_range(self, *_: Any) -> None:
         min_y: float | None = None

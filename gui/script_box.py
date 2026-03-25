@@ -869,9 +869,9 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
 
 
 class ConditionScriptBox(QtWidgets.QFrame):
-    """Side-panel editor for writing and running stock condition scripts."""
+    """Reusable script input widget that emits the current script on change."""
 
-    run_requested = QtCore.Signal(str)
+    script_changed = QtCore.Signal(str)
 
     def __init__(
         self,
@@ -880,11 +880,6 @@ class ConditionScriptBox(QtWidgets.QFrame):
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._status_palette = {
-            "info": "#475569",
-            "success": "#166534",
-            "error": "#b91c1c",
-        }
 
         function_registry = get_default_function_registry()
         function_definitions = tuple(
@@ -893,26 +888,9 @@ class ConditionScriptBox(QtWidgets.QFrame):
         )
         autocomplete_entries = build_script_autocomplete_entries(function_definitions)
 
-        self.setObjectName("conditionScriptPanel")
-        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.setMinimumWidth(320)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setStyleSheet(
             f"""
-            QFrame#conditionScriptPanel {{
-                background: #f8fafc;
-                border-left: 1px solid #dbe4ee;
-            }}
-            QLabel#scriptTitle {{
-                color: #0f172a;
-                font-size: 16px;
-                font-weight: 600;
-            }}
-            QLabel#scriptHelp {{
-                color: #475569;
-            }}
-            QLabel#scriptStatus {{
-                padding-top: 4px;
-            }}
             QPlainTextEdit {{
                 background: {_SCRIPT_EDITOR_BACKGROUND};
                 border: 1px solid {_SCRIPT_EDITOR_BORDER};
@@ -924,21 +902,6 @@ class ConditionScriptBox(QtWidgets.QFrame):
             QPlainTextEdit:focus {{
                 border: 1px solid {_SCRIPT_EDITOR_FOCUS_BORDER};
                 border-radius: 8px;
-            }}
-            QPushButton {{
-                background: #2563eb;
-                border: none;
-                border-radius: 6px;
-                color: white;
-                font-weight: 600;
-                min-height: 36px;
-                padding: 0 14px;
-            }}
-            QPushButton:hover {{
-                background: #1d4ed8;
-            }}
-            QPushButton:pressed {{
-                background: #1e40af;
             }}
             """
         )
@@ -952,70 +915,17 @@ class ConditionScriptBox(QtWidgets.QFrame):
         self._editor.setPlaceholderText(DEFAULT_SCRIPT_PLACEHOLDER)
         self._editor.setPlainText(initial_script)
         self._editor.setTabStopDistance(24)
-
-        self._status_label = QtWidgets.QLabel()
-        self._status_label.setObjectName("scriptStatus")
-        self._status_label.setWordWrap(True)
-
-        self._run_button = QtWidgets.QPushButton("Run Condition")
-        self._run_button.clicked.connect(self._emit_run_requested)
-        self._shortcuts: list[QtGui.QShortcut] = []
-
-        self._build_layout()
-        self._install_shortcuts()
-        self.show_hint(
-            "Write a boolean condition using dataframe columns and helper functions. Autocomplete and function argument hints update as you type."
-        )
-
-    def _build_layout(self) -> None:
-        """Create a compact editor layout with the run button anchored at the bottom."""
-
-        title_label = QtWidgets.QLabel("Condition Script")
-        title_label.setObjectName("scriptTitle")
-
-        help_label = QtWidgets.QLabel(
-            "Type a function or parameter name to see up to three suggestions below the cursor."
-        )
-        help_label.setObjectName("scriptHelp")
-        help_label.setWordWrap(True)
+        self._editor.textChanged.connect(self._emit_script_changed)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-        layout.addWidget(title_label)
-        layout.addWidget(help_label)
-        layout.addWidget(self._editor, 1)
-        layout.addWidget(self._status_label)
-        layout.addWidget(self._run_button)
-
-    def _install_shortcuts(self) -> None:
-        """Add keyboard shortcuts so scripts can be run without leaving the editor."""
-
-        for key_sequence in ("Ctrl+Return", "Ctrl+Enter"):
-            shortcut = QtGui.QShortcut(QtGui.QKeySequence(key_sequence), self)
-            shortcut.activated.connect(self._emit_run_requested)
-            self._shortcuts.append(shortcut)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._editor)
 
     def script_text(self) -> str:
-        return self._editor.toPlainText().strip()
+        return self._editor.toPlainText()
 
     def set_script_text(self, script: str) -> None:
         self._editor.setPlainText(script)
 
-    def show_hint(self, message: str) -> None:
-        self._set_status(message, tone="info")
-
-    def show_success(self, message: str) -> None:
-        self._set_status(message, tone="success")
-
-    def show_error(self, message: str) -> None:
-        self._set_status(message, tone="error")
-
-    def _set_status(self, message: str, *, tone: str) -> None:
-        """Render script feedback with a small amount of color-coded emphasis."""
-
-        self._status_label.setStyleSheet(f"color: {self._status_palette[tone]};")
-        self._status_label.setText(message)
-
-    def _emit_run_requested(self) -> None:
-        self.run_requested.emit(self.script_text())
+    def _emit_script_changed(self) -> None:
+        self.script_changed.emit(self.script_text())
