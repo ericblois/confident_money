@@ -307,10 +307,13 @@ class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
         self,
         document: QtGui.QTextDocument,
         function_names: Sequence[str],
+        parameter_names: Sequence[str],
     ) -> None:
         super().__init__(document)
         self._function_names = frozenset(function_names)
+        self._parameter_names = frozenset(parameter_names)
         self._identifier_format = _build_text_format("#d8b4fe")
+        self._invalid_identifier_format = _build_text_format(_SCRIPT_EDITOR_TEXT)
         self._function_format = _build_text_format(
             "#7dd3fc",
             weight=QtGui.QFont.Weight.DemiBold,
@@ -387,12 +390,15 @@ class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
                     self.setFormat(token_start, index - token_start, self._boolean_format)
                     continue
 
-                token_format = (
-                    self._function_format
-                    if identifier in self._function_names
+                if (
+                    identifier in self._function_names
                     and self._next_non_whitespace_character(text, index) == "("
-                    else self._identifier_format
-                )
+                ):
+                    token_format = self._function_format
+                elif identifier in self._parameter_names:
+                    token_format = self._identifier_format
+                else:
+                    token_format = self._invalid_identifier_format
                 self.setFormat(token_start, index - token_start, token_format)
                 continue
 
@@ -716,6 +722,11 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
         self._syntax_highlighter = _ConditionScriptHighlighter(
             self.document(),
             tuple(self._function_definitions),
+            tuple(
+                entry.short_name
+                for entry in self._autocomplete_entries
+                if entry.kind == "parameter"
+            ),
         )
 
         editor_font = QtGui.QFontDatabase.systemFont(
