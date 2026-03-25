@@ -5,8 +5,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from gui.script_box import ConditionScriptBox
 
 
-class ChartRightPanel(QtWidgets.QFrame):
-    """Chart-specific side panel that hosts the reusable script input box."""
+class ScriptContent(QtWidgets.QWidget):
+    """Host the reusable script editor content shown in the right panel."""
 
     run_requested = QtCore.Signal(str)
     script_changed = QtCore.Signal(str)
@@ -15,52 +15,12 @@ class ChartRightPanel(QtWidgets.QFrame):
         self,
         *,
         initial_script: str = "",
+        status_palette: dict[str, str],
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._status_palette = {
-            "info": "#475569",
-            "success": "#166534",
-            "error": "#b91c1c",
-        }
-
-        self.setObjectName("chartRightPanel")
-        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.setMinimumWidth(320)
-        self.setStyleSheet(
-            """
-            QFrame#chartRightPanel {
-                background: #f8fafc;
-                border-left: 1px solid #dbe4ee;
-            }
-            QLabel#scriptTitle {
-                color: #0f172a;
-                font-size: 16px;
-                font-weight: 600;
-            }
-            QLabel#scriptHelp {
-                color: #475569;
-            }
-            QLabel#scriptStatus {
-                padding-top: 4px;
-            }
-            QPushButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 6px;
-                color: white;
-                font-weight: 600;
-                min-height: 36px;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton:pressed {
-                background: #1e40af;
-            }
-            """
-        )
+        self._status_palette = status_palette
+        self._shortcuts: list[QtGui.QShortcut] = []
 
         self.script_box = ConditionScriptBox(initial_script=initial_script, parent=self)
 
@@ -69,7 +29,6 @@ class ChartRightPanel(QtWidgets.QFrame):
         self._status_label.setWordWrap(True)
 
         self._run_button = QtWidgets.QPushButton("Run Condition")
-        self._shortcuts: list[QtGui.QShortcut] = []
 
         self._build_layout()
         self._connect_signals()
@@ -80,14 +39,14 @@ class ChartRightPanel(QtWidgets.QFrame):
 
     def _build_layout(self) -> None:
         title_label = QtWidgets.QLabel("Script Editor")
-        title_label.setObjectName("scriptTitle")
+        title_label.setObjectName("panelTitle")
 
         help_label = QtWidgets.QLabel("Buy when:")
-        help_label.setObjectName("scriptHelp")
+        help_label.setObjectName("panelHelp")
         help_label.setWordWrap(True)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(title_label)
         layout.addWidget(help_label)
@@ -126,3 +85,4 @@ class ChartRightPanel(QtWidgets.QFrame):
 
     def _emit_run_requested(self) -> None:
         self.run_requested.emit(self.script_text())
+
