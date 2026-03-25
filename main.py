@@ -5,7 +5,7 @@ load_dotenv()
 if __name__ == "__main__":
     from datetime import datetime
 
-    from analysis.momentum import add_hourly_momentum_columns
+    from features import add_hourly_momentum_columns
     from gui.chart_window.chart_window import ChartWindow
     from gui.chart_window.chart import DataChart
     from FMP.hourly_data import fmp_get_hourly_dataframe
