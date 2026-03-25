@@ -80,13 +80,67 @@ class _HoverSeriesData:
 
 
 @dataclass(slots=True)
+class _ViewSeriesData:
+    plot_x: np.ndarray
+    y_values: np.ndarray
+    is_sorted: bool
+    cached_visible_key: tuple[int, int] | None = None
+    cached_visible_bounds: tuple[float, float] | None = None
+
+    @classmethod
+    def from_values(
+        cls,
+        plot_x: Sequence[float] | pd.Series | np.ndarray,
+        y_values: Sequence[float] | pd.Series | np.ndarray,
+    ) -> "_ViewSeriesData":
+        plot_x_array = np.asarray(plot_x, dtype=float)
+        y_array = np.asarray(y_values, dtype=float)
+        finite_mask = np.isfinite(plot_x_array) & np.isfinite(y_array)
+        finite_plot_x = plot_x_array[finite_mask]
+        finite_y = y_array[finite_mask]
+        return cls(
+            plot_x=finite_plot_x,
+            y_values=finite_y,
+            is_sorted=finite_plot_x.size < 2 or bool(np.all(np.diff(finite_plot_x) >= 0)),
+        )
+
+    def visible_y_bounds(self, x_min: float, x_max: float) -> tuple[float, float] | None:
+        if self.plot_x.size == 0:
+            return None
+
+        if self.is_sorted:
+            start = int(np.searchsorted(self.plot_x, x_min, side="left"))
+            end = int(np.searchsorted(self.plot_x, x_max, side="right"))
+            visible_key = (start, end)
+            if visible_key == self.cached_visible_key:
+                return self.cached_visible_bounds
+
+            if start >= end:
+                bounds = None
+            else:
+                visible_y = self.y_values[start:end]
+                bounds = (float(np.min(visible_y)), float(np.max(visible_y)))
+
+            self.cached_visible_key = visible_key
+            self.cached_visible_bounds = bounds
+            return bounds
+
+        visible_mask = (self.plot_x >= x_min) & (self.plot_x <= x_max)
+        if not np.any(visible_mask):
+            return None
+
+        visible_y = self.y_values[visible_mask]
+        return float(np.min(visible_y)), float(np.max(visible_y))
+
+
+@dataclass(slots=True)
 class _ChartPane:
     name: str
     y_label: str
     height_ratio: int
     view_box: "_AutoFitViewBox"
     plot_item: pg.PlotItem
-    hover_line: pg.PlotCurveItem | None = None
+    hover_line: pg.InfiniteLine | None = None
     hover_tooltip: pg.TextItem | None = None
     week_dividers: dict[float, pg.InfiniteLine] = field(default_factory=dict)
     series_count: int = 0
@@ -259,11 +313,17 @@ class _AutoFitViewBox(pg.ViewBox):
         self.setMenuEnabled(False)
 
         self._padding_fraction = (1 - vertical_fill_ratio) / (2 * vertical_fill_ratio)
-        self._series_data: list[tuple[pd.Series, pd.Series]] = []
+        self._series_data: list[_ViewSeriesData] = []
+        self._last_y_range: tuple[float, float] | None = None
         self.sigXRangeChanged.connect(self.refit_y_range)
 
-    def register_series(self, x_values: pd.Series, y_values: pd.Series) -> None:
-        self._series_data.append((x_values, y_values))
+    def register_series(
+        self,
+        x_values: Sequence[float] | pd.Series | np.ndarray,
+        y_values: Sequence[float] | pd.Series | np.ndarray,
+    ) -> None:
+        self._series_data.append(_ViewSeriesData.from_values(x_values, y_values))
+        self._last_y_range = None
 
     def wheelEvent(self, ev: Any, axis: int | None = None) -> None:
         if axis != 1 and self.state["mouseEnabled"][0]:
@@ -326,30 +386,45 @@ class _AutoFitViewBox(pg.ViewBox):
         min_y: float | None = None
         max_y: float | None = None
         x_min, x_max = self.viewRange()[0]
+        if not np.isfinite(x_min) or not np.isfinite(x_max):
+            return
+        if x_min > x_max:
+            x_min, x_max = x_max, x_min
 
-        for x_values, y_values in self._series_data:
-            visible_mask = x_values.between(x_min, x_max, inclusive="both") & y_values.notna()
-            visible_values = y_values[visible_mask]
-            if visible_values.empty:
+        for series_data in self._series_data:
+            visible_bounds = series_data.visible_y_bounds(x_min, x_max)
+            if visible_bounds is None:
                 continue
 
-            series_min = float(visible_values.min())
-            series_max = float(visible_values.max())
+            series_min, series_max = visible_bounds
             min_y = series_min if min_y is None else min(min_y, series_min)
             max_y = series_max if max_y is None else max(max_y, series_max)
 
         if min_y is None or max_y is None:
+            self._last_y_range = None
             return
 
         if min_y == max_y:
             padding = abs(min_y) * self._padding_fraction or 1.0
         else:
             padding = (max_y - min_y) * self._padding_fraction
-        self.setYRange(min_y - padding, max_y + padding, padding=0.0)
+        y_range = (min_y - padding, max_y + padding)
+        if self._last_y_range is not None and np.allclose(
+            y_range,
+            self._last_y_range,
+            rtol=1e-9,
+            atol=1e-9,
+        ):
+            return
+
+        self._last_y_range = y_range
+        self.setYRange(*y_range, padding=0.0)
 
 
 class DataChart:
     """Display an interactive PyQtGraph line chart in a native desktop window."""
+
+    _VIEW_FEEDBACK_INTERVAL_MS = 16
 
     def __init__(
         self,
@@ -388,6 +463,10 @@ class DataChart:
         self._hover_x_position: float | None = None
         self._active_hover_pane: _ChartPane | None = None
         self._mouse_proxy: pg.SignalProxy | None = None
+        self._view_feedback_timer = QtCore.QTimer(self._layout_widget)
+        self._view_feedback_timer.setSingleShot(True)
+        self._view_feedback_timer.setInterval(self._VIEW_FEEDBACK_INTERVAL_MS)
+        self._view_feedback_timer.timeout.connect(self._apply_view_feedback)
         self._default_plot_x = self._to_plot_x(self.data[self.x_column])
         self._condition_region_items: list[_ConditionRegionItem] = []
         self._week_divider_positions = self._build_week_divider_positions()
@@ -462,7 +541,7 @@ class DataChart:
         if self.show_spikes:
             self._attach_hover_feedback_to_pane(pane)
 
-        pane.view_box.sigRangeChanged.connect(self._handle_view_range_changed)
+        pane.view_box.sigXRangeChanged.connect(self._handle_view_range_changed)
         self._sync_week_dividers_for_pane(pane)
         return pane
 
@@ -497,12 +576,11 @@ class DataChart:
 
     def _attach_hover_feedback_to_pane(self, pane: _ChartPane) -> None:
         if pane.hover_line is None:
-            pane.hover_line = pg.PlotCurveItem(
-                x=[],
-                y=[],
+            pane.hover_line = pg.InfiniteLine(
+                pos=0.0,
+                angle=90,
                 pen=self._build_hover_line_pen(),
-                connect="all",
-                antialias=False,
+                movable=False,
             )
             pane.hover_line.setZValue(9)
             pane.hover_line.hide()
@@ -642,6 +720,11 @@ class DataChart:
         return None
 
     def _handle_view_range_changed(self, *_: Any) -> None:
+        if not self.show_spikes and not self._week_divider_positions:
+            return
+        self._view_feedback_timer.start()
+
+    def _apply_view_feedback(self) -> None:
         self._update_hover_line()
         self._sync_week_dividers()
 
@@ -665,11 +748,7 @@ class DataChart:
             if pane.hover_line is None:
                 continue
 
-            y_min, y_max = pane.view_box.viewRange()[1]
-            pane.hover_line.setData(
-                x=np.array([self._hover_x_position, self._hover_x_position], dtype=float),
-                y=np.array([y_min, y_max], dtype=float),
-            )
+            pane.hover_line.setPos(float(self._hover_x_position))
             pane.hover_line.show()
 
     def _build_hover_lines(self, target_x: float) -> tuple[list[str], float]:
@@ -1018,16 +1097,20 @@ class DataChart:
         hover: bool,
     ) -> None:
         plot_x = self._to_plot_x(x_values)
+        plot_x_array = plot_x.to_numpy(dtype=float, copy=False)
+        y_array = y_values.to_numpy(dtype=float, copy=False)
         item = pane.plot_item.plot(
-            x=plot_x.to_numpy(dtype=float, copy=False),
-            y=y_values.to_numpy(dtype=float, copy=False),
+            x=plot_x_array,
+            y=y_array,
             name=name,
             pen=style.pen(),
             connect="finite",
             antialias=False,
         )
+        if np.isfinite(plot_x_array).all() and np.isfinite(y_array).all():
+            item.setSkipFiniteCheck(True)
 
-        pane.view_box.register_series(plot_x, y_values)
+        pane.view_box.register_series(plot_x_array, y_array)
         if hover:
             self._register_hover_series(
                 pane_name=pane.name,

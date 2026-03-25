@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+import pandas as pd
+
 
 try:
     from PySide6 import QtCore, QtWidgets
@@ -111,6 +113,20 @@ class AutoFitViewBoxWheelTests(unittest.TestCase):
         self.assertAlmostEqual(lead_x_min, -12.0)
         self.assertAlmostEqual(lead_x_max, 88.0)
         self.assertTrue(event.accepted)
+
+    def test_refit_y_range_uses_only_visible_finite_points(self) -> None:
+        view_box = _AutoFitViewBox()
+        view_box.setGeometry(QtCore.QRectF(0.0, 0.0, 400.0, 200.0))
+        view_box.register_series(
+            pd.Series([0.0, 1.0, 2.0, 3.0, 4.0]),
+            pd.Series([float("nan"), 10.0, 20.0, float("nan"), 5.0]),
+        )
+        view_box.setRange(xRange=(0.5, 3.5), yRange=(0.0, 1.0), padding=0.0)
+        view_box.refit_y_range()
+
+        y_min, y_max = view_box.viewRange()[1]
+        self.assertAlmostEqual(y_min, 10.0 - (10.0 / 18.0), places=3)
+        self.assertAlmostEqual(y_max, 20.0 + (10.0 / 18.0), places=3)
 
 
 if __name__ == "__main__":
