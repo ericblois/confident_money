@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
@@ -18,6 +18,19 @@ _DASH_STYLES = {
     "dashdot": QtCore.Qt.PenStyle.DashDotLine,
     "dashdotdot": QtCore.Qt.PenStyle.DashDotDotLine,
 }
+_CHART_BACKGROUND = "#24211f"
+_CHART_SURFACE = "#202837"
+_CHART_BORDER = "#3b4455"
+_CHART_AXIS_TEXT = "#cbd5e1"
+_CHART_AXIS_LINE = "#566277"
+_CHART_TITLE_TEXT = "#f8fafc"
+_CHART_WEEK_DIVIDER = "#5b667b"
+_CHART_CURSOR_LINE = "#e2e8f0"
+_CHART_TOOLTIP_FILL = "#252b39"
+_CHART_TOOLTIP_BORDER = "#64748b"
+_CHART_TOOLTIP_HEADER = "#f8fafc"
+_CHART_TOOLTIP_SECTION = "#94a3b8"
+_CHART_TOOLTIP_TEXT = "#dbe4ee"
 
 
 # Styling and hover helpers keep the main chart class focused on display logic.
@@ -75,6 +88,7 @@ class _ChartPane:
     plot_item: pg.PlotItem
     hover_line: pg.PlotCurveItem | None = None
     hover_tooltip: pg.TextItem | None = None
+    week_dividers: dict[float, pg.InfiniteLine] = field(default_factory=dict)
     series_count: int = 0
 
     @property
@@ -209,6 +223,31 @@ class _ChartDateAxisItem(pg.AxisItem):
         return labels
 
 
+class _ChartValueAxisItem(pg.AxisItem):
+    """Format y-axis labels consistently and keep horizontal grid density light."""
+
+    def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
+        if self.logMode:
+            return self.logTickStrings(values, scale, spacing)
+
+        labels: list[str] = []
+        for value in values:
+            scaled_value = value * scale
+            labels.append("" if not np.isfinite(scaled_value) else f"{scaled_value:.2f}")
+        return labels
+
+    def tickSpacing(self, minVal: float, maxVal: float, size: float) -> list[tuple[float, float]]:
+        spacing_levels = super().tickSpacing(minVal, maxVal, size)
+        if not spacing_levels:
+            return spacing_levels
+
+        major_spacing, major_offset = spacing_levels[0]
+        if not np.isfinite(major_spacing) or major_spacing <= 0:
+            return [spacing_levels[0]]
+
+        return [(major_spacing, major_offset), (major_spacing / 2.0, major_offset)]
+
+
 class _AutoFitViewBox(pg.ViewBox):
     """Keep the y-axis fitted to the data visible in the current x-range."""
 
@@ -340,7 +379,7 @@ class DataChart:
         pg.setConfigOptions(antialias=False, leftButtonPan=True)
 
         self._layout_widget = pg.GraphicsLayoutWidget()
-        self._layout_widget.setBackground("w")
+        self._layout_widget.setBackground(_CHART_BACKGROUND)
         self._window: QtWidgets.QMainWindow | None = None
 
         self._panes: list[_ChartPane] = []
@@ -351,6 +390,7 @@ class DataChart:
         self._mouse_proxy: pg.SignalProxy | None = None
         self._default_plot_x = self._to_plot_x(self.data[self.x_column])
         self._condition_region_items: list[_ConditionRegionItem] = []
+        self._week_divider_positions = self._build_week_divider_positions()
 
         self._create_pane("main", y_label=self.y_label, height_ratio=3)
         if self.show_spikes:
@@ -364,11 +404,20 @@ class DataChart:
         axis.set_values(self.data[self.x_column])
         return axis
 
+    def _build_left_axis(self) -> pg.AxisItem:
+        return _ChartValueAxisItem(orientation="left")
+
     def _configure_pane_plot(self, pane: _ChartPane) -> None:
-        pane.plot_item.setLabel("left", pane.y_label, color="#444444")
-        pane.plot_item.showGrid(x=True, y=True, alpha=0.15)
+        pane.plot_item.setLabel("left", pane.y_label, color=_CHART_AXIS_TEXT)
+        pane.plot_item.showGrid(x=False, y=True, alpha=0.18)
         pane.plot_item.setClipToView(True)
         pane.plot_item.setDownsampling(auto=True, mode="peak")
+        for axis_name in ("left", "bottom"):
+            axis = pane.plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen(_CHART_AXIS_LINE))
+            axis.setTextPen(pg.mkPen(_CHART_AXIS_TEXT))
+            axis.setTickPen(pg.mkPen(_CHART_AXIS_LINE))
+            axis.setStyle(tickAlpha=0.35)
 
     def _create_pane(
         self,
@@ -382,9 +431,16 @@ class DataChart:
             row=len(self._panes),
             col=0,
             viewBox=view_box,
-            axisItems={"bottom": self._build_bottom_axis()},
+            axisItems={
+                "bottom": self._build_bottom_axis(),
+                "left": self._build_left_axis(),
+            },
         )
         plot_item.addLegend(offset=(10, 10))
+        if plot_item.legend is not None:
+            plot_item.legend.setBrush(pg.mkBrush(_CHART_SURFACE))
+            plot_item.legend.setPen(pg.mkPen(_CHART_BORDER))
+            plot_item.legend.setLabelTextColor(_CHART_AXIS_TEXT)
 
         if self._panes:
             plot_item.setXLink(self._panes[0].plot_item)
@@ -407,6 +463,7 @@ class DataChart:
             self._attach_hover_feedback_to_pane(pane)
 
         pane.view_box.sigRangeChanged.connect(self._handle_view_range_changed)
+        self._sync_week_dividers_for_pane(pane)
         return pane
 
     def _set_pane_height(self, row: int, height_ratio: int) -> None:
@@ -416,15 +473,15 @@ class DataChart:
 
     def _refresh_pane_axes(self) -> None:
         for index, pane in enumerate(self._panes):
-            pane.plot_item.setLabel("left", pane.y_label, color="#444444")
+            pane.plot_item.setLabel("left", pane.y_label, color=_CHART_AXIS_TEXT)
             if index == 0:
-                pane.plot_item.setTitle(self.title, color="#222222", size="14pt")
+                pane.plot_item.setTitle(self.title, color=_CHART_TITLE_TEXT, size="14pt")
             else:
                 pane.plot_item.setTitle("")
 
             if index == len(self._panes) - 1:
                 pane.plot_item.showAxis("bottom")
-                pane.plot_item.setLabel("bottom", self.x_column.title(), color="#444444")
+                pane.plot_item.setLabel("bottom", self.x_column.title(), color=_CHART_AXIS_TEXT)
             else:
                 pane.plot_item.hideAxis("bottom")
 
@@ -452,22 +509,104 @@ class DataChart:
             pane.plot_item.addItem(pane.hover_line, ignoreBounds=True)
 
         if pane.hover_tooltip is None:
+            tooltip_fill = QtGui.QColor(_CHART_TOOLTIP_FILL)
+            tooltip_fill.setAlpha(235)
             pane.hover_tooltip = pg.TextItem(
                 anchor=(0, 1),
-                border=pg.mkPen("#b7c1cc"),
-                fill=pg.mkBrush(255, 255, 255, 235),
+                border=pg.mkPen(_CHART_TOOLTIP_BORDER),
+                fill=pg.mkBrush(tooltip_fill),
             )
             pane.hover_tooltip.setZValue(10)
             pane.hover_tooltip.hide()
             pane.plot_item.addItem(pane.hover_tooltip, ignoreBounds=True)
 
     def _build_hover_line_pen(self) -> QtGui.QPen:
-        pen = QtGui.QPen(QtGui.QColor("#334155"))
+        pen = QtGui.QPen(QtGui.QColor(_CHART_CURSOR_LINE))
         pen.setCosmetic(True)
         pen.setWidthF(2.0)
-        pen.setStyle(QtCore.Qt.PenStyle.CustomDashLine)
-        pen.setDashPattern([4.0, 3.0])
+        pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
         return pen
+
+    def _build_week_divider_positions(self) -> list[float]:
+        if not self._x_is_datetime:
+            return []
+
+        timestamps = pd.Series(self.data[self.x_column]).reset_index(drop=True)
+        week_periods = timestamps.dt.to_period("W-SUN")
+        divider_positions: list[float] = []
+
+        for index in range(1, len(week_periods)):
+            if pd.isna(timestamps.iloc[index - 1]) or pd.isna(timestamps.iloc[index]):
+                continue
+            if week_periods.iloc[index] == week_periods.iloc[index - 1]:
+                continue
+            divider_positions.append(float(index) - 0.5)
+
+        return divider_positions
+
+    def _build_week_divider_pen(self) -> QtGui.QPen:
+        pen = QtGui.QPen(QtGui.QColor(_CHART_WEEK_DIVIDER))
+        pen.setCosmetic(True)
+        pen.setWidthF(1.0)
+        pen.setStyle(QtCore.Qt.PenStyle.CustomDashLine)
+        pen.setDashPattern([4.0, 4.0])
+        return pen
+
+    def _visible_week_divider_positions(self, x_min: float, x_max: float) -> list[float]:
+        if not self._week_divider_positions or not self._x_is_datetime:
+            return []
+
+        start_index = max(0, int(np.ceil(x_min)))
+        end_index = min(len(self.data) - 1, int(np.floor(x_max)))
+        if end_index < start_index:
+            return []
+
+        visible_dates = self.data[self.x_column].iloc[start_index : end_index + 1].dropna()
+        if visible_dates.empty:
+            return []
+
+        visible_start = pd.Timestamp(visible_dates.iloc[0])
+        visible_end = pd.Timestamp(visible_dates.iloc[-1])
+        if visible_end >= visible_start + pd.DateOffset(months=6):
+            return []
+
+        return [
+            x_position
+            for x_position in self._week_divider_positions
+            if x_min <= x_position <= x_max
+        ]
+
+    def _sync_week_dividers(self) -> None:
+        for pane in self._panes:
+            self._sync_week_dividers_for_pane(pane)
+
+    def _sync_week_dividers_for_pane(self, pane: _ChartPane) -> None:
+        x_min, x_max = pane.view_box.viewRange()[0]
+        visible_positions = set(self._visible_week_divider_positions(x_min, x_max))
+
+        for x_position, divider in list(pane.week_dividers.items()):
+            if x_position in visible_positions:
+                continue
+            pane.plot_item.removeItem(divider)
+            del pane.week_dividers[x_position]
+
+        if not visible_positions:
+            return
+
+        divider_pen = self._build_week_divider_pen()
+        for x_position in sorted(visible_positions):
+            if x_position in pane.week_dividers:
+                continue
+
+            divider = pg.InfiniteLine(
+                pos=x_position,
+                angle=90,
+                pen=divider_pen,
+                movable=False,
+            )
+            divider.setZValue(-4)
+            pane.plot_item.addItem(divider, ignoreBounds=True)
+            pane.week_dividers[x_position] = divider
 
     def _handle_mouse_moved(self, event: tuple[Any, ...]) -> None:
         active_pane = self._pane_at_scene_position(event[0])
@@ -504,6 +643,7 @@ class DataChart:
 
     def _handle_view_range_changed(self, *_: Any) -> None:
         self._update_hover_line()
+        self._sync_week_dividers()
 
     def _hide_hover_feedback(self) -> None:
         self._hover_x_position = None
@@ -567,7 +707,7 @@ class DataChart:
             return [], target_x
 
         header = (
-            "<span style='color:#111827; font-size:11pt; font-weight:600;'>"
+            f"<span style='color:{_CHART_TOOLTIP_HEADER}; font-size:11pt; font-weight:600;'>"
             f"{self._format_hover_x_value(snapped_raw_x)}"
             "</span>"
         )
@@ -595,7 +735,7 @@ class DataChart:
 
     def _format_hover_section_header(self, title: str) -> str:
         return (
-            "<span style='color:#475569; font-size:9pt; font-weight:600;'>"
+            f"<span style='color:{_CHART_TOOLTIP_SECTION}; font-size:9pt; font-weight:600;'>"
             f"{title}"
             "</span>"
         )
@@ -603,7 +743,7 @@ class DataChart:
     def _format_hover_row(self, *, name: str, y_value: float, color: str) -> str:
         return (
             f"<span style='color:{color}; font-weight:600;'>&#9632;</span> "
-            f"<span style='color:#1f2937; font-size:10pt;'>{name}: {self._format_hover_number(y_value)}</span>"
+            f"<span style='color:{_CHART_TOOLTIP_TEXT}; font-size:10pt;'>{name}: {self._format_hover_number(y_value)}</span>"
         )
 
     def _format_hover_x_value(self, value: Any) -> str:
@@ -707,6 +847,7 @@ class DataChart:
             if auto_range:
                 pane.plot_item.autoRange()
             pane.view_box.refit_y_range()
+        self._sync_week_dividers()
 
     def run_application(self) -> None:
         """Start the Qt event loop when this chart created the QApplication."""
