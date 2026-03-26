@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Mapping
+from functools import lru_cache
 from typing import Any, cast
 
 from condition_script.types import (
@@ -37,7 +38,7 @@ def parse_expression(
         raise ValueError("Condition scripts cannot be empty.")
 
     parsed_expression = ast.parse(script, mode="eval")
-    resolved_functions = functions or _get_default_functions()
+    resolved_functions = functions or _get_default_function_registry()
     resolved_name_type = resolve_name_type or _default_name_type
 
     return _parse_node(
@@ -64,10 +65,18 @@ def parse_condition(
     return cast(ConditionExpression, expression)
 
 
-def _get_default_functions() -> FunctionRegistry:
-    from condition_script.tester import get_default_function_registry
+def _build_default_function_registry() -> FunctionRegistry:
+    from condition_script.tester import get_default_function_definitions
 
-    return get_default_function_registry()
+    return {
+        function_definition.name: function_definition
+        for function_definition in get_default_function_definitions()
+    }
+
+
+@lru_cache(maxsize=1)
+def _get_default_function_registry() -> FunctionRegistry:
+    return _build_default_function_registry()
 
 
 def _default_name_type(name: str) -> ScriptType[Any]:

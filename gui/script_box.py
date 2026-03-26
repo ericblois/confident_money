@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from html import escape
 from typing import Any, Sequence
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from condition_script import get_default_function_registry
+from condition_script import get_default_function_definitions
+from condition_script.autocomplete import (
+    build_signature_hint_html,
+    extract_signature_context as _extract_signature_context,
+    get_default_autocomplete_entries,
+    get_script_autocomplete_suggestions,
+)
 from condition_script.types import (
     FunctionDefinition,
-    FunctionSignature,
     ScriptAutocompleteEntry,
-    build_script_autocomplete_entries,
 )
 
 
@@ -19,7 +22,7 @@ DEFAULT_SCRIPT_PLACEHOLDER = (
     "close > mv_avg(close, 20)\n"
     "and volume > mv_avg(volume, 20)"
 )
-MAX_AUTOCOMPLETE_SUGGESTIONS = 3
+MAX_AUTOCOMPLETE_SUGGESTIONS = 5
 _SCRIPT_EDITOR_BACKGROUND = "#252b39"
 _SCRIPT_EDITOR_SURFACE = "#1f2531"
 _SCRIPT_EDITOR_BORDER = "#3b4455"
@@ -56,13 +59,6 @@ class _CompletionContext:
     token_start: int
     token_end: int
     typed_text: str
-
-
-@dataclass(frozen=True, slots=True)
-class _SignatureContext:
-    function_definition: FunctionDefinition[Any]
-    signature: FunctionSignature[Any]
-    current_argument_index: int
 
 
 def _is_identifier_character(character: str) -> bool:
@@ -124,182 +120,6 @@ def _extract_completion_context(
     )
 
 
-def _autocomplete_sort_key(
-    entry: ScriptAutocompleteEntry,
-    query: str,
-) -> tuple[int, int, int, str] | None:
-    normalized_query = query.strip().lower()
-    if not normalized_query:
-        return None
-
-    short_name = entry.short_name.lower()
-    full_name = entry.full_name.lower()
-    full_name_words = full_name.replace("-", " ").split()
-    kind_priority = 0 if entry.kind == "function" else 1
-
-    if short_name == normalized_query:
-        return (0, kind_priority, len(entry.short_name), short_name)
-    if short_name.startswith(normalized_query):
-        return (1, kind_priority, len(entry.short_name), short_name)
-    if any(word.startswith(normalized_query) for word in full_name_words):
-        return (2, kind_priority, len(entry.short_name), short_name)
-    if normalized_query in short_name:
-        return (3, kind_priority, len(entry.short_name), short_name)
-    if normalized_query in full_name:
-        return (4, kind_priority, len(entry.short_name), short_name)
-
-    return None
-
-
-def get_script_autocomplete_suggestions(
-    entries: Sequence[ScriptAutocompleteEntry],
-    query: str,
-    *,
-    limit: int = MAX_AUTOCOMPLETE_SUGGESTIONS,
-) -> list[ScriptAutocompleteEntry]:
-    """Return the strongest autocomplete matches for the current token."""
-
-    ranked_entries: list[tuple[tuple[int, int, int, str], ScriptAutocompleteEntry]] = []
-    for entry in entries:
-        sort_key = _autocomplete_sort_key(entry, query)
-        if sort_key is not None:
-            ranked_entries.append((sort_key, entry))
-
-    ranked_entries.sort(key=lambda ranked_entry: ranked_entry[0])
-    return [entry for _, entry in ranked_entries[: max(0, limit)]]
-
-
-def _select_signature_for_argument(
-    function_definition: FunctionDefinition[Any],
-    argument_index: int,
-) -> FunctionSignature[Any]:
-    matching_signatures = [
-        signature
-        for signature in function_definition.signatures
-        if argument_index < len(signature.parameters)
-    ]
-    if matching_signatures:
-        return min(matching_signatures, key=lambda signature: len(signature.parameters))
-
-    return max(function_definition.signatures, key=lambda signature: len(signature.parameters))
-
-
-def _extract_signature_context(
-    script_text: str,
-    cursor_position: int,
-    function_definitions: dict[str, FunctionDefinition[Any]],
-) -> _SignatureContext | None:
-    if cursor_position < 0 or cursor_position > len(script_text):
-        return None
-
-    call_stack: list[dict[str, Any]] = []
-    last_identifier: tuple[str, int, int] | None = None
-    string_quote: str | None = None
-    is_escaped = False
-    index = 0
-
-    while index < cursor_position:
-        character = script_text[index]
-
-        if string_quote is not None:
-            if is_escaped:
-                is_escaped = False
-            elif character == "\\":
-                is_escaped = True
-            elif character == string_quote:
-                string_quote = None
-            index += 1
-            continue
-
-        if character in ("'", '"'):
-            string_quote = character
-            last_identifier = None
-            index += 1
-            continue
-
-        if _is_identifier_character(character) and (character.isalpha() or character == "_" or last_identifier is not None):
-            start_index = index
-            index += 1
-            while index < cursor_position and _is_identifier_character(script_text[index]):
-                index += 1
-            last_identifier = (script_text[start_index:index], start_index, index)
-            continue
-
-        if character == "(":
-            function_name = None
-            if last_identifier is not None:
-                _, _, identifier_end = last_identifier
-                between_text = script_text[identifier_end:index]
-                if between_text.strip() == "":
-                    function_name = last_identifier[0]
-
-            call_stack.append(
-                {
-                    "function_name": function_name,
-                    "argument_index": 0,
-                }
-            )
-            last_identifier = None
-            index += 1
-            continue
-
-        if character == ")":
-            if call_stack:
-                call_stack.pop()
-            last_identifier = None
-            index += 1
-            continue
-
-        if character == ",":
-            if call_stack:
-                call_stack[-1]["argument_index"] += 1
-            last_identifier = None
-            index += 1
-            continue
-
-        if not character.isspace():
-            last_identifier = None
-        index += 1
-
-    for call_context in reversed(call_stack):
-        function_name = call_context["function_name"]
-        if function_name is None:
-            continue
-
-        function_definition = function_definitions.get(function_name)
-        if function_definition is None:
-            continue
-
-        current_argument_index = int(call_context["argument_index"])
-        signature = _select_signature_for_argument(function_definition, current_argument_index)
-        return _SignatureContext(
-            function_definition=function_definition,
-            signature=signature,
-            current_argument_index=current_argument_index,
-        )
-
-    return None
-
-
-def build_signature_hint_html(signature_context: _SignatureContext) -> str:
-    """Render a compact signature hint with the active argument emphasized."""
-
-    formatted_parameters: list[str] = []
-    for index, parameter_spec in enumerate(signature_context.signature.parameters):
-        parameter_label = escape(parameter_spec.name)
-        if index == signature_context.current_argument_index:
-            formatted_parameters.append(f"<b>{parameter_label}</b>")
-        else:
-            formatted_parameters.append(parameter_label)
-
-    return (
-        f"<span style='color:{_SCRIPT_EDITOR_TEXT}; font-size:10pt;'>"
-        f"<b>{escape(signature_context.function_definition.name)}</b>("
-        f"{', '.join(formatted_parameters)})"
-        "</span>"
-    )
-
-
 class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
     """Apply IDE-style colors to scripts with nested pastel bracket matching."""
 
@@ -307,11 +127,9 @@ class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
         self,
         document: QtGui.QTextDocument,
         function_names: Sequence[str],
-        parameter_names: Sequence[str],
     ) -> None:
         super().__init__(document)
         self._function_names = frozenset(function_names)
-        self._parameter_names = frozenset(parameter_names)
         self._identifier_format = _build_text_format("#d8b4fe")
         self._invalid_identifier_format = _build_text_format(_SCRIPT_EDITOR_TEXT)
         self._function_format = _build_text_format(
@@ -395,10 +213,10 @@ class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
                     and self._next_non_whitespace_character(text, index) == "("
                 ):
                     token_format = self._function_format
-                elif identifier in self._parameter_names:
-                    token_format = self._identifier_format
-                else:
+                elif self._next_non_whitespace_character(text, index) == "(":
                     token_format = self._invalid_identifier_format
+                else:
+                    token_format = self._identifier_format
                 self.setFormat(token_start, index - token_start, token_format)
                 continue
 
@@ -722,11 +540,6 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
         self._syntax_highlighter = _ConditionScriptHighlighter(
             self.document(),
             tuple(self._function_definitions),
-            tuple(
-                entry.short_name
-                for entry in self._autocomplete_entries
-                if entry.kind == "parameter"
-            ),
         )
 
         editor_font = QtGui.QFontDatabase.systemFont(
@@ -814,12 +627,17 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
             get_script_autocomplete_suggestions(
                 self._autocomplete_entries,
                 completion_context.typed_text,
+                limit=MAX_AUTOCOMPLETE_SUGGESTIONS,
             )
             if completion_context is not None
             else []
         )
         signature_hint_html = (
-            build_signature_hint_html(signature_context)
+            build_signature_hint_html(
+                signature_context,
+                text_color=_SCRIPT_EDITOR_TEXT,
+                font_size_pt=10,
+            )
             if signature_context is not None
             else None
         )
@@ -892,12 +710,8 @@ class ConditionScriptBox(QtWidgets.QFrame):
     ) -> None:
         super().__init__(parent)
 
-        function_registry = get_default_function_registry()
-        function_definitions = tuple(
-            runtime_function.definition
-            for runtime_function in function_registry.values()
-        )
-        autocomplete_entries = build_script_autocomplete_entries(function_definitions)
+        function_definitions = get_default_function_definitions()
+        autocomplete_entries = get_default_autocomplete_entries()
 
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setStyleSheet(

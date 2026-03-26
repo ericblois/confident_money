@@ -20,9 +20,9 @@ FEATURE_INFOS = (
         "True Range",
         "volatility",
         args=[
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
     feature_info(
@@ -31,9 +31,9 @@ FEATURE_INFOS = (
         "volatility",
         args=[
             feature_arg("window", "Lookback Periods", "periods"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
             feature_arg("min_periods", "Minimum Periods", "min_periods"),
         ],
     ),
@@ -53,8 +53,8 @@ FEATURE_INFOS = (
         "volatility",
         args=[
             feature_arg("window", "Lookback Periods", "periods"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
             feature_arg("min_periods", "Minimum Periods", "min_periods"),
             feature_arg(
                 "annualization_factor",
@@ -69,10 +69,10 @@ FEATURE_INFOS = (
         "volatility",
         args=[
             feature_arg("window", "Lookback Periods", "periods"),
-            feature_arg("open_col", "Open Column", "open_source", "open"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("open", "Open Column", "open_source", "open"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
             feature_arg("min_periods", "Minimum Periods", "min_periods"),
             feature_arg(
                 "annualization_factor",
@@ -87,10 +87,10 @@ FEATURE_INFOS = (
         "volatility",
         args=[
             feature_arg("window", "Lookback Periods", "periods"),
-            feature_arg("open_col", "Open Column", "open_source", "open"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("open", "Open Column", "open_source", "open"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
             feature_arg("min_periods", "Minimum Periods", "min_periods"),
             feature_arg(
                 "annualization_factor",

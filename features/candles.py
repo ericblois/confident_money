@@ -12,8 +12,8 @@ FEATURE_INFOS = (
         "Candle Body Percent",
         "candles",
         args=[
-            feature_arg("open_col", "Open Column", "open_source", "open"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("open", "Open Column", "open_source", "open"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
     feature_info(
@@ -21,10 +21,10 @@ FEATURE_INFOS = (
         "Upper Wick Ratio",
         "candles",
         args=[
-            feature_arg("open_col", "Open Column", "open_source", "open"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("open", "Open Column", "open_source", "open"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
     feature_info(
@@ -32,10 +32,10 @@ FEATURE_INFOS = (
         "Lower Wick Ratio",
         "candles",
         args=[
-            feature_arg("open_col", "Open Column", "open_source", "open"),
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("open", "Open Column", "open_source", "open"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
     feature_info(
@@ -43,9 +43,9 @@ FEATURE_INFOS = (
         "Close Location Value",
         "candles",
         args=[
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
 )

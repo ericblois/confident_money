@@ -8,26 +8,24 @@ import numpy as np
 import pandas as pd
 
 from features.features import (
-    calc_breakout_distance,
-    calc_distance_to_col,
+    FEATURE_CALCULATOR_PARAMETER_NAMES_BY_SCRIPT,
+    FEATURE_CALCULATORS_BY_SCRIPT,
+    FEATURE_INFOS_BY_SCRIPT,
+    FEATURE_SCRIPT_FUNCTION_INFOS_BY_NAME,
+    SCRIPT_FUNCTION_ALIAS_INFOS,
+    SCRIPT_FUNCTION_INFOS_BY_NAME,
+    SCRIPT_PARAMETER_INFOS_BY_NAME,
+    ScriptFunctionInfo,
     calc_log_return,
     calc_log_value,
-    calc_momentum,
-    calc_mv_avg,
-    calc_range_position,
     calc_realized_vol,
-    calc_rel_momentum,
-    calc_rel_return,
-    calc_rel_trend_r2,
-    calc_rel_trend_slope,
-    calc_trend_r2,
-    calc_trend_slope,
-    calc_vwap,
 )
 from condition_script.parser import parse_condition, parse_expression
 from condition_script.types import (
+    ANY,
     BOOLEAN,
     NUMBER,
+    STRING,
     ArithmeticExpression,
     ColumnExpression,
     ComparisonExpression,
@@ -35,7 +33,6 @@ from condition_script.types import (
     Expression,
     FunctionCallExpression,
     FunctionDefinition,
-    FunctionSignature,
     LiteralExpression,
     LogicalExpression,
     ReturnT,
@@ -61,6 +58,13 @@ type FunctionRegistry = dict[str, RuntimeFunction[Any]]
 
 def get_default_function_registry() -> FunctionRegistry:
     return dict(_DEFAULT_FUNCTIONS)
+
+
+def get_default_function_definitions() -> tuple[FunctionDefinition[Any], ...]:
+    return tuple(
+        runtime_function.definition
+        for runtime_function in _DEFAULT_FUNCTIONS.values()
+    )
 
 
 def evaluate_expression(
@@ -269,6 +273,13 @@ def _as_boolean_scalar(value: RuntimeValue) -> bool:
     return bool(value)
 
 
+def _as_scalar_value(value: RuntimeValue, *, parameter_name: str) -> RuntimeScalar:
+    if isinstance(value, pd.Series):
+        raise ValueError(f"'{parameter_name}' must be a scalar value, not a series.")
+
+    return value
+
+
 def _as_numeric_series(
     dataframe: pd.DataFrame,
     value: RuntimeValue,
@@ -314,48 +325,130 @@ def _as_positive_int(value: RuntimeValue, *, parameter_name: str) -> int:
     return int(numeric_value)
 
 
-def _eval_mv_avg(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    window = _as_positive_int(arguments[1], parameter_name="window")
-    min_periods = (
-        1
-        if len(arguments) < 3
-        else _as_positive_int(arguments[2], parameter_name="min_periods")
-    )
-    working_dataframe = _series_frame(dataframe, source=source)
-    return calc_mv_avg(working_dataframe, "source", window, min_periods=min_periods)
+def _is_feature_source_arg(arg_type: str) -> bool:
+    return arg_type == "source" or arg_type.endswith("_source")
 
 
-def _eval_vwap(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    window = _as_positive_int(arguments[0], parameter_name="window")
-    price_arg = arguments[1] if len(arguments) >= 2 else "close"
-    volume_arg = arguments[2] if len(arguments) >= 3 else "volume"
-    min_periods = (
-        window
-        if len(arguments) < 4
-        else _as_positive_int(arguments[3], parameter_name="min_periods")
+def _resolve_feature_source_argument(
+    dataframe: pd.DataFrame,
+    working_dataframe: pd.DataFrame,
+    value: RuntimeValue,
+    *,
+    function_name: str,
+    parameter_name: str,
+) -> tuple[pd.DataFrame, str]:
+    if isinstance(value, str):
+        return working_dataframe, value
+
+    series = (
+        value.reindex(dataframe.index)
+        if isinstance(value, pd.Series)
+        else pd.Series(value, index=dataframe.index)
     )
-    price_series = _as_numeric_series(dataframe, price_arg, parameter_name="price")
-    volume_series = _as_numeric_series(dataframe, volume_arg, parameter_name="volume")
-    working_dataframe = _series_frame(
-        dataframe,
-        price=price_series,
-        volume=volume_series,
+    if working_dataframe is dataframe:
+        working_dataframe = dataframe.copy()
+
+    temp_column_index = 0
+    temp_column_name = (
+        f"__condition_feature_{function_name}_{parameter_name}_{temp_column_index}"
     )
-    return calc_vwap(
-        working_dataframe,
-        window,
-        price_col="price",
-        volume_col="volume",
-        min_periods=min_periods,
-    )
+    while temp_column_name in working_dataframe.columns:
+        temp_column_index += 1
+        temp_column_name = (
+            f"__condition_feature_{function_name}_{parameter_name}_{temp_column_index}"
+        )
+
+    working_dataframe[temp_column_name] = series
+    return working_dataframe, temp_column_name
 
 
-def _eval_distance(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    left = _as_numeric_series(dataframe, arguments[0], parameter_name="left")
-    right = _as_numeric_series(dataframe, arguments[1], parameter_name="right")
-    working_dataframe = _series_frame(dataframe, left=left, right=right)
-    return calc_distance_to_col(working_dataframe, "left", "right")
+def _resolve_feature_scalar_argument(
+    value: RuntimeValue,
+    *,
+    parameter_name: str,
+    arg_type: str,
+) -> RuntimeScalar:
+    scalar_value = _as_scalar_value(value, parameter_name=parameter_name)
+    if arg_type == "boolean_flag":
+        return _as_boolean_scalar(scalar_value)
+    return scalar_value
+
+
+def _full_parameter_names(function_info: ScriptFunctionInfo) -> tuple[str, ...]:
+    return max(function_info.signatures, key=len)
+
+
+def _build_feature_evaluator(
+    function_info: ScriptFunctionInfo,
+    calc_function: Callable[..., pd.Series],
+    *,
+    feature_name: str,
+    feature_parameter_names: tuple[str, ...] | None = None,
+    target_parameter_names: tuple[str, ...] | None = None,
+) -> RuntimeEvaluator:
+    feature_arg_infos_by_name = {
+        feature_arg_info.script_name: feature_arg_info
+        for feature_arg_info in FEATURE_INFOS_BY_SCRIPT[feature_name].all_args
+    }
+    script_parameter_names = _full_parameter_names(function_info)
+    resolved_feature_parameter_names = (
+        script_parameter_names
+        if feature_parameter_names is None
+        else feature_parameter_names
+    )
+    resolved_target_parameter_names = (
+        resolved_feature_parameter_names
+        if target_parameter_names is None
+        else target_parameter_names
+    )
+    if (
+        len(script_parameter_names) != len(resolved_feature_parameter_names)
+        or len(script_parameter_names) != len(resolved_target_parameter_names)
+    ):
+        raise ValueError(
+            f"Function '{function_info.name}' has mismatched feature bridge metadata."
+        )
+    parameter_infos = tuple(
+        feature_arg_infos_by_name[feature_parameter_name]
+        for feature_parameter_name in resolved_feature_parameter_names
+    )
+
+    def evaluator(
+        dataframe: pd.DataFrame,
+        arguments: tuple[RuntimeValue, ...],
+    ) -> pd.Series:
+        working_dataframe = dataframe
+        resolved_arguments: dict[str, RuntimeScalar | str] = {}
+        parameter_names = script_parameter_names[: len(arguments)]
+        target_names = resolved_target_parameter_names[: len(arguments)]
+        active_parameter_infos = parameter_infos[: len(arguments)]
+
+        for argument_value, parameter_name, target_name, parameter_info in zip(
+            arguments,
+            parameter_names,
+            target_names,
+            active_parameter_infos,
+            strict=True,
+        ):
+            if _is_feature_source_arg(parameter_info.arg_type):
+                working_dataframe, resolved_value = _resolve_feature_source_argument(
+                    dataframe,
+                    working_dataframe,
+                    argument_value,
+                    function_name=function_info.name,
+                    parameter_name=parameter_name,
+                )
+            else:
+                resolved_value = _resolve_feature_scalar_argument(
+                    argument_value,
+                    parameter_name=parameter_name,
+                    arg_type=parameter_info.arg_type,
+                )
+            resolved_arguments[target_name] = resolved_value
+
+        return calc_function(working_dataframe, **resolved_arguments)
+
+    return evaluator
 
 
 def _eval_log_return(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
@@ -401,267 +494,98 @@ def _eval_vlt(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> p
     )
 
 
-def _eval_momentum(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    return_series = _as_numeric_series(dataframe, arguments[0], parameter_name="return")
-    volatility_series = _as_numeric_series(dataframe, arguments[1], parameter_name="volatility")
-    working_dataframe = _series_frame(
-        dataframe,
-        return_value=return_series,
-        volatility=volatility_series,
-    )
-    return calc_momentum(working_dataframe, "return_value", "volatility")
-
-
-def _eval_trend_slope(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    window = _as_positive_int(arguments[1], parameter_name="window")
-    working_dataframe = _series_frame(dataframe, source=source)
-    return calc_trend_slope(working_dataframe, "source", window)
-
-
-def _eval_trend_r2(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    window = _as_positive_int(arguments[1], parameter_name="window")
-    working_dataframe = _series_frame(dataframe, source=source)
-    return calc_trend_r2(working_dataframe, "source", window)
-
-
-def _eval_breakout_distance(
-    dataframe: pd.DataFrame,
-    arguments: tuple[RuntimeValue, ...],
-) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    window = _as_positive_int(arguments[1], parameter_name="window")
-    min_periods = (
-        window
-        if len(arguments) < 3
-        else _as_positive_int(arguments[2], parameter_name="min_periods")
-    )
-    working_dataframe = _series_frame(dataframe, source=source)
-    return calc_breakout_distance(
-        working_dataframe,
-        "source",
-        window,
-        min_periods=min_periods,
-    )
-
-
-def _eval_range_position(
-    dataframe: pd.DataFrame,
-    arguments: tuple[RuntimeValue, ...],
-) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    window = _as_positive_int(arguments[1], parameter_name="window")
-    min_periods = (
-        window
-        if len(arguments) < 3
-        else _as_positive_int(arguments[2], parameter_name="min_periods")
-    )
-    working_dataframe = _series_frame(dataframe, source=source)
-    return calc_range_position(
-        working_dataframe,
-        "source",
-        window,
-        min_periods=min_periods,
-    )
-
-
-def _eval_rel_return(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    return_series = _as_numeric_series(dataframe, arguments[0], parameter_name="return")
-    benchmark_series = _as_numeric_series(dataframe, arguments[1], parameter_name="benchmark")
-    window = _as_positive_int(arguments[2], parameter_name="window")
-    working_dataframe = _series_frame(
-        dataframe,
-        return_value=return_series,
-        benchmark=benchmark_series,
-    )
-    return calc_rel_return(working_dataframe, "return_value", "benchmark", window)
-
-
-def _eval_rel_momentum(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    rel_return_series = _as_numeric_series(dataframe, arguments[0], parameter_name="rel_return")
-    return_series = _as_numeric_series(dataframe, arguments[1], parameter_name="return")
-    benchmark_return_series = _as_numeric_series(
-        dataframe,
-        arguments[2],
-        parameter_name="benchmark_return",
-    )
-    window = _as_positive_int(arguments[3], parameter_name="window")
-    min_periods = (
-        window
-        if len(arguments) < 5
-        else _as_positive_int(arguments[4], parameter_name="min_periods")
-    )
-    working_dataframe = _series_frame(
-        dataframe,
-        rel_return=rel_return_series,
-        return_value=return_series,
-        benchmark_return=benchmark_return_series,
-    )
-    return calc_rel_momentum(
-        working_dataframe,
-        "rel_return",
-        "return_value",
-        "benchmark_return",
-        window,
-        min_periods=min_periods,
-    )
-
-
-def _eval_rel_trend_slope(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    benchmark = _as_numeric_series(dataframe, arguments[1], parameter_name="benchmark")
-    window = _as_positive_int(arguments[2], parameter_name="window")
-    working_dataframe = _series_frame(dataframe, source=source, benchmark=benchmark)
-    return calc_rel_trend_slope(working_dataframe, "source", "benchmark", window)
-
-
-def _eval_rel_trend_r2(dataframe: pd.DataFrame, arguments: tuple[RuntimeValue, ...]) -> pd.Series:
-    source = _as_numeric_series(dataframe, arguments[0], parameter_name="source")
-    benchmark = _as_numeric_series(dataframe, arguments[1], parameter_name="benchmark")
-    window = _as_positive_int(arguments[2], parameter_name="window")
-    working_dataframe = _series_frame(dataframe, source=source, benchmark=benchmark)
-    return calc_rel_trend_r2(working_dataframe, "source", "benchmark", window)
-
-
 def _build_default_function_registry() -> FunctionRegistry:
     registry: FunctionRegistry = {}
+    parameter_specs = {
+        parameter_name: parameter(
+            parameter_info.name,
+            *(
+                _script_type_for_name(type_name)
+                for type_name in parameter_info.accepted_types
+            ),
+        )
+        for parameter_name, parameter_info in SCRIPT_PARAMETER_INFOS_BY_NAME.items()
+    }
 
-    numeric_source = parameter("source", NUMBER)
-    numeric_left = parameter("left", NUMBER)
-    numeric_right = parameter("right", NUMBER)
-    numeric_benchmark = parameter("benchmark", NUMBER)
-    numeric_return = parameter("return", NUMBER)
-    numeric_rel_return = parameter("rel_return", NUMBER)
-    numeric_volatility = parameter("volatility", NUMBER)
-    numeric_price = parameter("price", NUMBER)
-    numeric_volume = parameter("volume", NUMBER)
-    window = parameter("window", NUMBER)
-    min_periods = parameter("min_periods", NUMBER)
+    for feature_name, calc_function in FEATURE_CALCULATORS_BY_SCRIPT.items():
+        function_info = FEATURE_SCRIPT_FUNCTION_INFOS_BY_NAME[feature_name]
+        _register(
+            registry,
+            function_info,
+            _build_feature_evaluator(
+                function_info,
+                calc_function,
+                feature_name=feature_name,
+                target_parameter_names=FEATURE_CALCULATOR_PARAMETER_NAMES_BY_SCRIPT[feature_name],
+            ),
+            parameter_specs,
+        )
 
-    _register(
-        registry,
-        "mv_avg",
-        _eval_mv_avg,
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "moving_avg",
-        _eval_mv_avg,
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "vwap",
-        _eval_vwap,
-        signature(NUMBER, window),
-        signature(NUMBER, window, numeric_price),
-        signature(NUMBER, window, numeric_price, numeric_volume),
-        signature(NUMBER, window, numeric_price, numeric_volume, min_periods),
-    )
-    _register(
-        registry,
-        "distance",
-        _eval_distance,
-        signature(NUMBER, numeric_left, numeric_right),
-    )
-    _register(
-        registry,
-        "log_return",
-        _eval_log_return,
-        signature(NUMBER, window),
-        signature(NUMBER, numeric_source, window),
-    )
-    _register(
-        registry,
-        "vlt",
-        _eval_vlt,
-        signature(NUMBER, window),
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "realized_vol",
-        _eval_vlt,
-        signature(NUMBER, window),
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "momentum",
-        _eval_momentum,
-        signature(NUMBER, numeric_return, numeric_volatility),
-    )
-    _register(
-        registry,
-        "trend_slope",
-        _eval_trend_slope,
-        signature(NUMBER, numeric_source, window),
-    )
-    _register(
-        registry,
-        "trend_r2",
-        _eval_trend_r2,
-        signature(NUMBER, numeric_source, window),
-    )
-    _register(
-        registry,
-        "breakout_distance",
-        _eval_breakout_distance,
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "range_position",
-        _eval_range_position,
-        signature(NUMBER, numeric_source, window),
-        signature(NUMBER, numeric_source, window, min_periods),
-    )
-    _register(
-        registry,
-        "rel_return",
-        _eval_rel_return,
-        signature(NUMBER, numeric_return, numeric_benchmark, window),
-    )
-    _register(
-        registry,
-        "rel_momentum",
-        _eval_rel_momentum,
-        signature(NUMBER, numeric_rel_return, numeric_return, numeric_benchmark, window),
-        signature(NUMBER, numeric_rel_return, numeric_return, numeric_benchmark, window, min_periods),
-    )
-    _register(
-        registry,
-        "rel_trend_slope",
-        _eval_rel_trend_slope,
-        signature(NUMBER, numeric_source, numeric_benchmark, window),
-    )
-    _register(
-        registry,
-        "rel_trend_r2",
-        _eval_rel_trend_r2,
-        signature(NUMBER, numeric_source, numeric_benchmark, window),
-    )
+    custom_alias_evaluators: dict[str, RuntimeEvaluator] = {
+        "log_return": _eval_log_return,
+        "vlt": _eval_vlt,
+        "realized_vol": _eval_vlt,
+    }
+
+    for alias_info in SCRIPT_FUNCTION_ALIAS_INFOS:
+        function_info = SCRIPT_FUNCTION_INFOS_BY_NAME[alias_info.name]
+        evaluator = custom_alias_evaluators.get(alias_info.name)
+        if evaluator is None:
+            target_function_info = FEATURE_SCRIPT_FUNCTION_INFOS_BY_NAME[alias_info.target_name]
+            alias_parameter_names = _full_parameter_names(function_info)
+            target_feature_parameter_names = _full_parameter_names(target_function_info)
+            target_parameter_names = FEATURE_CALCULATOR_PARAMETER_NAMES_BY_SCRIPT[
+                alias_info.target_name
+            ]
+            evaluator = _build_feature_evaluator(
+                function_info,
+                FEATURE_CALCULATORS_BY_SCRIPT[alias_info.target_name],
+                feature_name=alias_info.target_name,
+                feature_parameter_names=target_feature_parameter_names[
+                    : len(alias_parameter_names)
+                ],
+                target_parameter_names=target_parameter_names[: len(alias_parameter_names)],
+            )
+
+        _register(
+            registry,
+            function_info,
+            evaluator,
+            parameter_specs,
+        )
 
     return registry
 
 
 def _register(
     registry: FunctionRegistry,
-    name: str,
+    function_info: ScriptFunctionInfo,
     evaluator: RuntimeEvaluator,
-    *signatures: FunctionSignature[Any],
+    parameter_specs: dict[str, Any],
 ) -> None:
-    registry[name] = RuntimeFunction(
-        definition=FunctionDefinition(name=name, signatures=signatures),
+    signatures = tuple(
+        signature(
+            _script_type_for_name(function_info.return_type),
+            *(parameter_specs[parameter_name] for parameter_name in parameter_names),
+        )
+        for parameter_names in function_info.signatures
+    )
+    registry[function_info.name] = RuntimeFunction(
+        definition=FunctionDefinition(name=function_info.name, signatures=signatures),
         evaluator=evaluator,
     )
+
+
+def _script_type_for_name(type_name: str) -> Any:
+    if type_name == "number":
+        return NUMBER
+    if type_name == "boolean":
+        return BOOLEAN
+    if type_name == "string":
+        return STRING
+    if type_name == "any":
+        return ANY
+    raise ValueError(f"Unsupported script value type '{type_name}'.")
 
 
 _DEFAULT_FUNCTIONS = _build_default_function_registry()

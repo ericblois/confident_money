@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from condition_script import get_default_function_registry
-from condition_script.types import build_script_autocomplete_entries
-from gui.script_box import (
-    _extract_signature_context,
+from condition_script import get_default_function_definitions, get_default_function_registry
+from condition_script.autocomplete import (
     build_signature_hint_html,
+    extract_signature_context,
+    get_default_autocomplete_entries,
     get_script_autocomplete_suggestions,
 )
+from condition_script.types import build_script_autocomplete_entries
 
 
 class ScriptAutocompleteTests(unittest.TestCase):
@@ -22,12 +23,22 @@ class ScriptAutocompleteTests(unittest.TestCase):
             self.function_definitions.values()
         )
 
+    def test_default_autocomplete_entries_match_default_function_catalog(self) -> None:
+        self.assertEqual(
+            get_default_autocomplete_entries(),
+            build_script_autocomplete_entries(get_default_function_definitions()),
+        )
+
     def test_autocomplete_catalog_includes_full_names_for_functions_and_parameters(self) -> None:
         entry_map = {
             (entry.kind, entry.short_name): entry
             for entry in self.entries
         }
 
+        self.assertEqual(
+            entry_map[("function", "gk_vlt")].full_name,
+            "Garman-Klass Volatility",
+        )
         self.assertEqual(entry_map[("function", "mv_avg")].full_name, "Moving Average")
         self.assertEqual(
             entry_map[("function", "rel_trend_r2")].full_name,
@@ -35,10 +46,8 @@ class ScriptAutocompleteTests(unittest.TestCase):
         )
         self.assertEqual(entry_map[("parameter", "window")].full_name, "Lookback Window")
         self.assertEqual(entry_map[("parameter", "price")].full_name, "Price Series")
-        self.assertEqual(entry_map[("parameter", "open")].full_name, "Opening Price")
-        self.assertEqual(entry_map[("parameter", "high")].full_name, "High Price")
-        self.assertEqual(entry_map[("parameter", "low")].full_name, "Low Price")
-        self.assertEqual(entry_map[("parameter", "close")].full_name, "Closing Price")
+        self.assertEqual(entry_map[("parameter", "source")].full_name, "Source Series")
+        self.assertEqual(entry_map[("parameter", "volume")].full_name, "Volume Series")
 
     def test_autocomplete_entries_expose_kind_in_subtitle(self) -> None:
         entry_map = {
@@ -51,22 +60,43 @@ class ScriptAutocompleteTests(unittest.TestCase):
             "Function • Moving Average",
         )
         self.assertEqual(
-            entry_map[("parameter", "close")].subtitle,
-            "Parameter • Closing Price",
+            entry_map[("parameter", "source")].subtitle,
+            "Parameter • Source Series",
         )
+
+    def test_autocomplete_only_includes_parameters_used_by_current_registry(self) -> None:
+        parameter_names = {
+            entry.short_name
+            for entry in self.entries
+            if entry.kind == "parameter"
+        }
+
+        self.assertIn("open", parameter_names)
+        self.assertIn("high", parameter_names)
+        self.assertIn("low", parameter_names)
+        self.assertIn("close", parameter_names)
+        self.assertIn("timestamp", parameter_names)
+        self.assertNotIn("open_col", parameter_names)
+        self.assertNotIn("close_col", parameter_names)
+        self.assertNotIn("timestamp_col", parameter_names)
 
     def test_autocomplete_matches_on_short_name_prefix(self) -> None:
         suggestions = get_script_autocomplete_suggestions(self.entries, "vw")
 
         self.assertEqual([entry.short_name for entry in suggestions], ["vwap"])
 
+    def test_autocomplete_includes_feature_script_names(self) -> None:
+        suggestions = get_script_autocomplete_suggestions(self.entries, "gk")
+
+        self.assertEqual([entry.short_name for entry in suggestions], ["gk_vlt"])
+
     def test_autocomplete_matches_on_full_name_words(self) -> None:
         suggestions = get_script_autocomplete_suggestions(self.entries, "moving")
 
-        self.assertEqual(
-            [entry.short_name for entry in suggestions[:2]],
-            ["moving_avg", "mv_avg"],
-        )
+        suggestion_names = [entry.short_name for entry in suggestions]
+
+        self.assertEqual(suggestion_names[0], "moving_avg")
+        self.assertIn("ma", suggestion_names)
 
     def test_autocomplete_is_limited_to_three_suggestions(self) -> None:
         suggestions = get_script_autocomplete_suggestions(self.entries, "r")
@@ -74,7 +104,7 @@ class ScriptAutocompleteTests(unittest.TestCase):
         self.assertEqual(len(suggestions), 3)
 
     def test_signature_context_tracks_current_argument(self) -> None:
-        signature_context = _extract_signature_context(
+        signature_context = extract_signature_context(
             "mv_avg(close, 20",
             len("mv_avg(close, 20"),
             self.function_definitions,
@@ -85,7 +115,7 @@ class ScriptAutocompleteTests(unittest.TestCase):
         self.assertEqual(signature_context.current_argument_index, 1)
 
     def test_signature_hint_bolds_active_argument(self) -> None:
-        signature_context = _extract_signature_context(
+        signature_context = extract_signature_context(
             "vwap(close, volume, ",
             len("vwap(close, volume, "),
             self.function_definitions,

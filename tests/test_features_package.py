@@ -8,13 +8,20 @@ import pandas as pd
 from features import (
     FEATURE_INFOS_BY_CATEGORY,
     FEATURE_INFOS_BY_SCRIPT,
+    SCRIPT_FUNCTION_INFOS_BY_NAME,
+    SCRIPT_PARAMETER_INFOS_BY_NAME,
     FeatureArgInfo,
     FeatureInfo,
-    add_hourly_momentum_columns,
+    add_log_return,
+    add_momentum,
+    add_realized_vol,
+    add_vwap,
     calc_day_of_week,
     calc_garman_klass_volatility,
     calc_is_holiday_adjacent,
+    calc_log_value,
     calc_relative_volume_percentile,
+    search_features,
 )
 
 
@@ -48,6 +55,36 @@ class FeaturePackageTests(unittest.TestCase):
         self.assertEqual(FEATURE_INFOS_BY_SCRIPT["rsi"].all_args[-1].script_name, "offset")
         self.assertNotIn("offset", {arg.script_name for arg in FEATURE_INFOS_BY_SCRIPT["rsi"].args})
 
+    def test_script_function_metadata_reuses_feature_info(self) -> None:
+        self.assertEqual(
+            SCRIPT_FUNCTION_INFOS_BY_NAME["mv_avg"].full_name,
+            FEATURE_INFOS_BY_SCRIPT["ma"].full_name,
+        )
+        self.assertEqual(
+            SCRIPT_FUNCTION_INFOS_BY_NAME["realized_vol"].full_name,
+            FEATURE_INFOS_BY_SCRIPT["vlt"].full_name,
+        )
+        self.assertEqual(
+            SCRIPT_PARAMETER_INFOS_BY_NAME["window"].full_name,
+            "Lookback Window",
+        )
+        self.assertEqual(
+            SCRIPT_FUNCTION_INFOS_BY_NAME["rel_momentum"].signatures[-1][-1],
+            "min_periods",
+        )
+        self.assertIn(
+            ("open", "close"),
+            SCRIPT_FUNCTION_INFOS_BY_NAME["body_pct"].signatures,
+        )
+        self.assertIn(
+            ("window", "open", "high", "low", "close"),
+            SCRIPT_FUNCTION_INFOS_BY_NAME["gk_vlt"].signatures,
+        )
+        self.assertIn(
+            ("timestamp",),
+            SCRIPT_FUNCTION_INFOS_BY_NAME["dow"].signatures,
+        )
+
     def test_calendar_features_return_integer_values(self) -> None:
         calendar_dataframe = pd.DataFrame(
             {
@@ -72,17 +109,61 @@ class FeaturePackageTests(unittest.TestCase):
         self.assertGreaterEqual(relative_volume.iloc[-1], 0.0)
         self.assertLessEqual(relative_volume.iloc[-1], 100.0)
 
-    def test_hourly_momentum_transform_still_adds_expected_columns(self) -> None:
-        transformed = add_hourly_momentum_columns(
-            self.price_dataframe[["date", "close", "volume"]],
-            market_dataframe=self.price_dataframe[["date", "close", "volume"]],
-            lookback_days={"1d": 1},
-            vwap_days=(1,),
+    def test_features_can_be_composed_for_multi_day_indicators(self) -> None:
+        transformed = self.price_dataframe[["date", "close", "volume"]].copy()
+        transformed["timestamp"] = transformed["date"]
+        transformed["trading_day"] = transformed["timestamp"].dt.normalize()
+        transformed["log_close"] = calc_log_value(transformed, "close")
+        add_log_return(
+            transformed,
+            "log_close",
+            1,
+            output_col="log_return_1h",
+        )
+        add_log_return(
+            transformed,
+            "log_close",
+            2,
+            output_col="log_return_1d",
+        )
+        add_realized_vol(
+            transformed,
+            "log_return_1h",
+            2,
+            output_col="realized_vol_1d",
+            min_periods=2,
+        )
+        add_momentum(
+            transformed,
+            "log_return_1d",
+            "realized_vol_1d",
+            output_col="momentum_1d",
+        )
+        add_vwap(
+            transformed,
+            2,
+            output_col="vwap_1d",
+            min_periods=2,
         )
 
         self.assertIn("vwap_1d", transformed.columns)
         self.assertIn("momentum_1d", transformed.columns)
-        self.assertIn("market_rel_momentum_1d", transformed.columns)
+        self.assertTrue(np.isfinite(transformed["momentum_1d"].iloc[-1]))
+
+    def test_search_features_prioritizes_exact_script_name_matches(self) -> None:
+        matches = search_features("rsi")
+
+        self.assertEqual(matches[0].script_name, "rsi")
+        self.assertLessEqual(len(matches), 3)
+
+    def test_search_features_matches_full_name_words(self) -> None:
+        matches = search_features("garman klass", n=5)
+
+        self.assertTrue(matches)
+        self.assertEqual(matches[0].script_name, "gk_vlt")
+
+    def test_search_features_handles_empty_queries(self) -> None:
+        self.assertEqual(search_features("   "), [])
 
 
 if __name__ == "__main__":

@@ -211,6 +211,7 @@ __all__ = [
     "FeatureInfo",
     "build_feature_category_map",
     "build_feature_info_map",
+    "build_search_sort_key",
     "datetime_column",
     "feature_arg",
     "feature_info",
@@ -219,7 +220,54 @@ __all__ = [
     "offset_suffix",
     "positive_int",
     "resolved_min_periods",
+    "normalized_search_text",
     "rolling_trend_stats",
     "safe_log",
     "wilder_mean",
 ]
+
+
+def normalized_search_text(text: str) -> str:
+    normalized_characters = [
+        character.lower() if character.isalnum() else " "
+        for character in text.strip()
+    ]
+    return " ".join("".join(normalized_characters).split())
+
+
+def build_search_sort_key(
+    query: str,
+    *,
+    script_name: str,
+    full_name: str,
+    priority: int = 0,
+) -> tuple[int, int, int, str] | None:
+    normalized_query = normalized_search_text(query)
+    if not normalized_query:
+        return None
+
+    normalized_script_name = normalized_search_text(script_name)
+    normalized_full_name = normalized_search_text(full_name)
+    full_name_words = tuple(normalized_full_name.split())
+
+    if normalized_script_name == normalized_query:
+        return (0, priority, len(script_name), normalized_script_name)
+    if normalized_script_name.startswith(normalized_query):
+        return (1, priority, len(script_name), normalized_script_name)
+    if any(word.startswith(normalized_query) for word in full_name_words):
+        return (2, priority, len(script_name), normalized_script_name)
+    if normalized_query in normalized_script_name:
+        return (3, priority, len(script_name), normalized_script_name)
+    if normalized_query in normalized_full_name:
+        return (4, priority, len(script_name), normalized_script_name)
+
+    query_tokens = normalized_query.split()
+    if query_tokens and all(token in full_name_words for token in query_tokens):
+        return (5, priority, len(script_name), normalized_script_name)
+    if query_tokens and all(
+        token in normalized_script_name or token in normalized_full_name
+        for token in query_tokens
+    ):
+        return (6, priority, len(script_name), normalized_script_name)
+
+    return None

@@ -19,7 +19,7 @@ FEATURE_INFOS = (
         "Price",
         "core",
         args=[
-            feature_arg("price_col", "Price Column", "price_source", "close"),
+            feature_arg("price", "Price Column", "price_source", "close"),
         ],
     ),
     feature_info(
@@ -65,9 +65,9 @@ FEATURE_INFOS = (
         "Typical Price",
         "core",
         args=[
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
-            feature_arg("close_col", "Close Column", "close_source", "close"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
+            feature_arg("close", "Close Column", "close_source", "close"),
         ],
     ),
     feature_info(
@@ -75,8 +75,8 @@ FEATURE_INFOS = (
         "Median Price",
         "core",
         args=[
-            feature_arg("high_col", "High Column", "high_source", "high"),
-            feature_arg("low_col", "Low Column", "low_source", "low"),
+            feature_arg("high", "High Column", "high_source", "high"),
+            feature_arg("low", "Low Column", "low_source", "low"),
         ],
     ),
 )

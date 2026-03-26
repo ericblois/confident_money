@@ -7,6 +7,12 @@ import pandas as pd
 
 from condition_script import add_condition_column, evaluate_expression, parse_condition
 from condition_script.types import BOOLEAN
+from features import (
+    calc_body_pct,
+    calc_breakout_distance,
+    calc_distance_to_col,
+    calc_garman_klass_volatility,
+)
 
 
 class ConditionScriptTests(unittest.TestCase):
@@ -60,6 +66,36 @@ class ConditionScriptTests(unittest.TestCase):
         )
 
         pd.testing.assert_series_equal(result, expected, check_names=False)
+
+    def test_feature_script_functions_are_available_in_conditions(self) -> None:
+        result = evaluate_expression(self.dataframe, "gk_vlt(3)")
+        expected = calc_garman_klass_volatility(self.dataframe, 3)
+
+        pd.testing.assert_series_equal(result, expected, check_names=False)
+
+    def test_feature_functions_accept_clean_column_argument_names(self) -> None:
+        result = evaluate_expression(self.dataframe, "body_pct(open, close)")
+
+        pd.testing.assert_series_equal(
+            result,
+            calc_body_pct(self.dataframe, "open", "close"),
+            check_names=False,
+        )
+
+    def test_aliases_delegate_to_feature_calculators(self) -> None:
+        distance = evaluate_expression(self.dataframe, "distance(close, open)")
+        breakout_distance = evaluate_expression(self.dataframe, "breakout_distance(close, 3)")
+
+        pd.testing.assert_series_equal(
+            distance,
+            calc_distance_to_col(self.dataframe, "close", "open"),
+            check_names=False,
+        )
+        pd.testing.assert_series_equal(
+            breakout_distance,
+            calc_breakout_distance(self.dataframe, "close", 3),
+            check_names=False,
+        )
 
     def test_quoted_source_arguments_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

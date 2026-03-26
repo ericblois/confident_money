@@ -32,7 +32,7 @@ FEATURE_INFOS = (
         "utils",
         args=[
             feature_arg("col", "Source Column", "source"),
-            feature_arg("reference_col", "Reference Column", "reference_source"),
+            feature_arg("reference", "Reference Column", "reference_source"),
         ],
     ),
     feature_info(

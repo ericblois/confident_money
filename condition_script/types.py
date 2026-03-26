@@ -4,6 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Generic, Literal, TypeVar
 
+from features.features import (
+    get_script_function_full_name,
+    get_script_parameter_full_name,
+)
+
 
 class NumberValue:
     """Marker type for numeric expressions."""
@@ -35,44 +40,6 @@ NUMBER = ScriptType[NumberValue]("number")
 BOOLEAN = ScriptType[BooleanValue]("boolean")
 STRING = ScriptType[StringValue]("string")
 ANY = ScriptType[AnyValue]("any")
-
-
-FUNCTION_DISPLAY_NAMES: dict[str, str] = {
-    "mv_avg": "Moving Average",
-    "moving_avg": "Moving Average",
-    "vwap": "Volume Weighted Average Price",
-    "distance": "Log Distance Between Series",
-    "log_return": "Log Return",
-    "vlt": "Realized Volatility",
-    "realized_vol": "Realized Volatility",
-    "momentum": "Momentum",
-    "trend_slope": "Trend Slope",
-    "trend_r2": "Trend R-Squared",
-    "breakout_distance": "Breakout Distance",
-    "range_position": "Range Position",
-    "rel_return": "Relative Return",
-    "rel_momentum": "Relative Momentum",
-    "rel_trend_slope": "Relative Trend Slope",
-    "rel_trend_r2": "Relative Trend R-Squared",
-}
-
-PARAMETER_DISPLAY_NAMES: dict[str, str] = {
-    "open": "Opening Price",
-    "high": "High Price",
-    "low": "Low Price",
-    "close": "Closing Price",
-    "source": "Source Series",
-    "left": "Left Series",
-    "right": "Right Series",
-    "benchmark": "Benchmark Series",
-    "return": "Return Series",
-    "rel_return": "Relative Return Series",
-    "volatility": "Volatility Series",
-    "price": "Price Series",
-    "volume": "Volume Series",
-    "window": "Lookback Window",
-    "min_periods": "Minimum Periods",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,23 +199,18 @@ class FunctionCallExpression(Expression[ReturnT]):
 type AnyExpression = Expression[Any]
 type ConditionExpression = Expression[BooleanValue]
 
-
-def _humanize_identifier(name: str) -> str:
-    return " ".join(part.upper() if part.isupper() else part.capitalize() for part in name.split("_"))
-
-
 def get_function_full_name(name: str) -> str:
-    return FUNCTION_DISPLAY_NAMES.get(name, _humanize_identifier(name))
+    return get_script_function_full_name(name)
 
 
 def get_parameter_full_name(name: str) -> str:
-    return PARAMETER_DISPLAY_NAMES.get(name, _humanize_identifier(name))
+    return get_script_parameter_full_name(name)
 
 
 def build_script_autocomplete_entries(
     function_definitions: Iterable[FunctionDefinition[Any]],
 ) -> tuple[ScriptAutocompleteEntry, ...]:
-    """Build a deduplicated autocomplete catalog from known functions and parameters."""
+    """Build a deduplicated autocomplete catalog from the active function registry."""
 
     entries: dict[tuple[ScriptNameKind, str], ScriptAutocompleteEntry] = {}
 
@@ -266,13 +228,6 @@ def build_script_autocomplete_entries(
                     full_name=parameter_spec.full_name,
                     kind="parameter",
                 )
-
-    for parameter_name in PARAMETER_DISPLAY_NAMES:
-        entries[("parameter", parameter_name)] = ScriptAutocompleteEntry(
-            short_name=parameter_name,
-            full_name=get_parameter_full_name(parameter_name),
-            kind="parameter",
-        )
 
     return tuple(
         sorted(

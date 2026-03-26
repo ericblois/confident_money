@@ -19,8 +19,8 @@ FEATURE_INFOS = (
         "Relative Return",
         "relative",
         args=[
-            feature_arg("return_col", "Return Column", "return_source"),
-            feature_arg("benchmark_col", "Benchmark Column", "benchmark_source"),
+            feature_arg("return", "Return Column", "return_source"),
+            feature_arg("benchmark", "Benchmark Column", "benchmark_source"),
             feature_arg("window", "Lookback Periods", "periods"),
             feature_arg("benchmark_is_return", "Benchmark Is Return", "boolean_flag", False),
         ],
@@ -30,10 +30,10 @@ FEATURE_INFOS = (
         "Relative Momentum",
         "relative",
         args=[
-            feature_arg("rel_return_col", "Relative Return Column", "relative_return_source"),
-            feature_arg("return_col", "Return Column", "return_source"),
+            feature_arg("rel_return", "Relative Return Column", "relative_return_source"),
+            feature_arg("return", "Return Column", "return_source"),
             feature_arg(
-                "benchmark_return_col",
+                "benchmark_return",
                 "Benchmark Return Column",
                 "benchmark_return_source",
             ),
@@ -47,7 +47,7 @@ FEATURE_INFOS = (
         "relative",
         args=[
             feature_arg("col", "Source Column", "source"),
-            feature_arg("benchmark_col", "Benchmark Column", "benchmark_source"),
+            feature_arg("benchmark", "Benchmark Column", "benchmark_source"),
             feature_arg("window", "Lookback Periods", "periods"),
         ],
     ),
@@ -57,7 +57,7 @@ FEATURE_INFOS = (
         "relative",
         args=[
             feature_arg("col", "Source Column", "source"),
-            feature_arg("benchmark_col", "Benchmark Column", "benchmark_source"),
+            feature_arg("benchmark", "Benchmark Column", "benchmark_source"),
             feature_arg("window", "Lookback Periods", "periods"),
         ],
     ),
