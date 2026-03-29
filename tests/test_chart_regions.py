@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
 
 try:
     from PySide6 import QtCore, QtWidgets
-    from gui.chart_window.chart import _AutoFitViewBox, build_condition_region_ranges
+    from gui.chart_window.chart import DataChart, _AutoFitViewBox, build_condition_region_ranges
+    from gui.chart_window.chart_window import ChartWindow
 except ImportError:  # pragma: no cover - depends on optional GUI dependencies
     QtCore = None
     QtWidgets = None
+    DataChart = None
+    ChartWindow = None
     _AutoFitViewBox = None
     build_condition_region_ranges = None
 
@@ -127,6 +132,123 @@ class AutoFitViewBoxWheelTests(unittest.TestCase):
         y_min, y_max = view_box.viewRange()[1]
         self.assertAlmostEqual(y_min, 10.0 - (10.0 / 18.0), places=3)
         self.assertAlmostEqual(y_max, 20.0 + (10.0 / 18.0), places=3)
+
+
+@unittest.skipIf(
+    DataChart is None,
+    "PySide6/pyqtgraph are not available in this environment.",
+)
+class DataChartAlignmentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_chart_preserves_row_order_when_coercing_x_column(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
+                "close": [10.0, 20.0, 30.0],
+            },
+            index=[2, 0, 1],
+        )
+        chart = DataChart(data, show_spikes=False)
+
+        pd.testing.assert_series_equal(
+            chart.data["date"],
+            pd.Series(pd.to_datetime(data["date"]), index=data.index, name="date"),
+        )
+        pd.testing.assert_series_equal(chart.data["close"], data["close"])
+
+    def test_add_line_aligns_series_to_chart_index(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=3, freq="D"),
+                "close": [10.0, 20.0, 30.0],
+            },
+            index=[2, 0, 1],
+        )
+        chart = DataChart(data, show_spikes=False)
+
+        chart.add_line(
+            name="Aligned Series",
+            y=pd.Series([100.0, 200.0, 300.0], index=[0, 1, 2]),
+        )
+
+        self.assertEqual(
+            chart._hover_series_data[-1].y_values.tolist(),
+            [300.0, 100.0, 200.0],
+        )
+
+    def test_set_condition_regions_aligns_series_to_chart_index(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=3, freq="D"),
+                "close": [10.0, 20.0, 30.0],
+            },
+            index=[2, 0, 1],
+        )
+        chart = DataChart(data, show_spikes=False)
+
+        highlighted_ranges = chart.set_condition_regions(
+            pd.Series([True, False, False], index=[0, 1, 2]),
+        )
+
+        self.assertEqual(highlighted_ranges, 1)
+        x_min, x_max = chart._condition_region_items[0].item.getRegion()
+        self.assertAlmostEqual(x_min, 0.5)
+        self.assertAlmostEqual(x_max, 1.5)
+
+
+@unittest.skipIf(
+    ChartWindow is None,
+    "PySide6/pyqtgraph are not available in this environment.",
+)
+class ChartWindowPersistenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_chart_window_restores_and_saves_script_drafts(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=3, freq="D"),
+                "close": [100.0, 101.0, 102.0],
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "chart_window.ini"
+            settings = QtCore.QSettings(
+                str(settings_path),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            settings.setValue("chart_window/buy_script", "close > 100")
+            settings.setValue("chart_window/sell_script", "close < 100")
+            settings.sync()
+
+            chart = DataChart(data, show_spikes=False)
+            window = ChartWindow(chart, settings=settings)
+            self.addCleanup(window.close)
+
+            self.assertEqual(window.right_panel.script_text(), "close > 100")
+            self.assertEqual(window.right_panel.sell_script_text(), "close < 100")
+
+            window.right_panel.set_script_text("close >= 101")
+            window.right_panel.set_sell_script_text("close <= 99")
+            settings.sync()
+
+            saved_settings = QtCore.QSettings(
+                str(settings_path),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            self.assertEqual(
+                saved_settings.value("chart_window/buy_script", "", type=str),
+                "close >= 101",
+            )
+            self.assertEqual(
+                saved_settings.value("chart_window/sell_script", "", type=str),
+                "close <= 99",
+            )
 
 
 if __name__ == "__main__":

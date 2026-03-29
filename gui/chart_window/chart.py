@@ -8,6 +8,8 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from condition_script import evaluate_condition as _evaluate_condition_script
+
 
 SeriesInput = str | Sequence[Any] | pd.Series
 
@@ -881,23 +883,45 @@ class DataChart:
         else:
             resolved = pd.Series(values)
 
-        resolved = pd.Series(resolved).reset_index(drop=True)
+        resolved = pd.Series(resolved)
         if len(resolved) != len(self.data):
             raise ValueError(
                 f"Series length mismatch for {name}: expected {len(self.data)}, got {len(resolved)}"
             )
+
+        if resolved.index.equals(self.data.index):
+            return resolved
+
+        if isinstance(values, pd.Series):
+            # Align labeled series by chart row index so plotted values and
+            # condition masks stay synced with the chart dataframe.
+            if resolved.index.is_unique and self.data.index.is_unique:
+                if (
+                    resolved.index.difference(self.data.index).empty
+                    and self.data.index.difference(resolved.index).empty
+                ):
+                    return resolved.reindex(self.data.index)
+            raise ValueError(
+                f"Series index mismatch for {name}: expected values aligned to the chart rows."
+            )
+
+        resolved.index = self.data.index
         return resolved
 
     def _coerce_x_values(self, values: Sequence[Any] | pd.Series) -> pd.Series:
-        series = pd.Series(values).reset_index(drop=True)
+        series = pd.Series(values).copy()
         parsed = pd.to_datetime(series, errors="coerce")
-        return pd.Series(parsed) if parsed.notna().any() else series
+        return parsed if parsed.notna().any() else series
 
     def _to_plot_x(self, values: pd.Series) -> pd.Series:
         # Datetime values are plotted as row positions so the custom axis can
         # format clean date labels from the original values.
         if pd.api.types.is_datetime64_any_dtype(values):
-            return pd.Series(np.arange(len(values), dtype=float))
+            return pd.Series(
+                np.arange(len(values), dtype=float),
+                index=values.index,
+                dtype=float,
+            )
         return pd.to_numeric(values, errors="coerce")
 
     def _resolve_pane(self, pane: str) -> _ChartPane:
@@ -943,6 +967,11 @@ class DataChart:
 
         return self
 
+    def evaluate_condition_script(self, script: str) -> pd.Series:
+        """Evaluate a condition script against the same chart dataframe used for display."""
+
+        return self._resolve_condition_mask(_evaluate_condition_script(self.data, script))
+
     def set_condition_regions(
         self,
         condition: SeriesInput,
@@ -950,21 +979,18 @@ class DataChart:
         color: str = "#22c55e",
         opacity: float = 0.18,
         panes: Sequence[str] | None = None,
+        clear_existing: bool = True,
     ) -> int:
         """Highlight contiguous x-ranges where a boolean condition is true."""
 
-        condition_mask = (
-            self._resolve_series(condition, name="condition mask")
-            .fillna(False)
-            .astype(bool)
-            .reset_index(drop=True)
-        )
+        condition_mask = self._resolve_condition_mask(condition)
         region_ranges = build_condition_region_ranges(
             condition_mask.to_numpy(dtype=bool, copy=False),
             self._default_plot_x.to_numpy(dtype=float, copy=False),
         )
 
-        self.clear_condition_regions()
+        if clear_existing:
+            self.clear_condition_regions()
         if not region_ranges:
             return 0
 
@@ -992,6 +1018,9 @@ class DataChart:
                 )
 
         return len(region_ranges)
+
+    def _resolve_condition_mask(self, condition: SeriesInput) -> pd.Series:
+        return self._resolve_series(condition, name="condition mask").fillna(False).astype(bool)
 
     def add_pane(
         self,

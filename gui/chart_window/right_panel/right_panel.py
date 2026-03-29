@@ -24,13 +24,14 @@ class _TabFiller(QtWidgets.QFrame):
 class ChartRightPanel(QtWidgets.QFrame):
     """Chart-specific side panel with tabs for script editing and XGBoost."""
 
-    run_requested = QtCore.Signal(str)
-    script_changed = QtCore.Signal(str)
+    run_requested = QtCore.Signal(str, str)
+    script_changed = QtCore.Signal(str, str)
 
     def __init__(
         self,
         *,
         initial_script: str = "",
+        initial_sell_script: str = "",
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -158,12 +159,14 @@ class ChartRightPanel(QtWidgets.QFrame):
 
         self._script_content = ScriptContent(
             initial_script=initial_script,
+            initial_sell_script=initial_sell_script,
             status_palette=self._status_palette,
             parent=self,
         )
         self._xgboost_content = XGBoostContent(parent=self)
 
         self.script_box = self._script_content.script_box
+        self.sell_script_box = self._script_content.sell_script_box
 
         self._build_layout()
         self._connect_signals()
@@ -213,6 +216,12 @@ class ChartRightPanel(QtWidgets.QFrame):
 
     def set_script_text(self, script: str) -> None:
         self._script_content.set_script_text(script)
+
+    def sell_script_text(self) -> str:
+        return self._script_content.sell_script_text()
+
+    def set_sell_script_text(self, script: str) -> None:
+        self._script_content.set_sell_script_text(script)
 
     def show_hint(self, message: str) -> None:
         self._script_content.show_hint(message)
