@@ -118,6 +118,26 @@ class ChartRightPanel(QtWidgets.QFrame):
                 font-size: 16px;
                 font-weight: 600;
             }
+            QToolButton#panelInfoButton {
+                background: transparent;
+                border: 1px solid rgba(248, 250, 252, 0.35);
+                border-radius: 10px;
+                color: #cbd5e1;
+                font-size: 12px;
+                font-weight: 700;
+                min-height: 20px;
+                max-height: 20px;
+                min-width: 20px;
+                max-width: 20px;
+                padding: 0;
+            }
+            QToolButton#panelInfoButton:hover {
+                background: rgba(248, 250, 252, 0.1);
+                border-color: rgba(248, 250, 252, 0.55);
+            }
+            QToolButton#panelInfoButton:pressed {
+                background: rgba(248, 250, 252, 0.16);
+            }
             QLabel#panelHelp {
                 color: #cbd5e1;
             }
