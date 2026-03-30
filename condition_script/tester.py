@@ -89,8 +89,7 @@ def evaluate_condition(
     functions: FunctionRegistry | None = None,
 ) -> pd.Series:
     registry = functions or get_default_function_registry()
-    parsed_condition = (
-        parse_condition(condition, functions=registry)
+    parsed_condition = ( parse_condition(condition, functions=registry)
         if isinstance(condition, str)
         else condition
     )
