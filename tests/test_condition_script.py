@@ -106,6 +106,30 @@ class ConditionScriptTests(unittest.TestCase):
             check_names=False,
         )
 
+    def test_price_column_falls_back_to_close_when_price_is_missing(self) -> None:
+        result = evaluate_expression(self.dataframe, "price")
+
+        pd.testing.assert_series_equal(
+            result,
+            self.dataframe["close"],
+            check_names=False,
+        )
+
+    def test_price_falls_back_to_close_inside_nested_feature_calls(self) -> None:
+        result = evaluate_expression(self.dataframe, "mv_avg(price, 2)")
+        expected = self.dataframe["close"].rolling(window=2, min_periods=1).mean()
+
+        pd.testing.assert_series_equal(result, expected, check_names=False)
+
+    def test_price_reports_missing_close_when_no_fallback_column_exists(self) -> None:
+        dataframe = self.dataframe.drop(columns=["close"])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Column 'price' not found in the dataframe, and fallback column 'close' is also missing\.",
+        ):
+            evaluate_expression(dataframe, "price")
+
     def test_aliases_delegate_to_feature_calculators(self) -> None:
         distance = evaluate_expression(self.dataframe, "distance(close, open)")
         breakout_distance = evaluate_expression(self.dataframe, "breakout_distance(close, 3)")

@@ -250,10 +250,9 @@ def _get_column_value(
     column_name: str,
     value_type: Any,
 ) -> pd.Series:
-    if column_name not in dataframe.columns:
-        raise ValueError(f"Column '{column_name}' not found in the dataframe.")
+    resolved_column_name = _resolve_dataframe_column_name(dataframe, column_name)
 
-    series = dataframe[column_name].reindex(dataframe.index)
+    series = dataframe[resolved_column_name].reindex(dataframe.index)
     if value_type == NUMBER:
         return pd.to_numeric(series, errors="coerce")
     if value_type == BOOLEAN:
@@ -307,9 +306,11 @@ def _as_numeric_series(
     if isinstance(value, str):
         if not allow_column_name:
             raise ValueError(f"'{parameter_name}' does not accept string values.")
-        if value not in dataframe.columns:
-            raise ValueError(f"Column '{value}' not found in the dataframe.")
-        return pd.to_numeric(dataframe[value], errors="coerce").reindex(dataframe.index)
+        resolved_column_name = _resolve_dataframe_column_name(dataframe, value)
+        return pd.to_numeric(
+            dataframe[resolved_column_name],
+            errors="coerce",
+        ).reindex(dataframe.index)
 
     if isinstance(value, pd.Series):
         return pd.to_numeric(value.reindex(dataframe.index), errors="coerce")
@@ -355,7 +356,7 @@ def _resolve_feature_source_argument(
     parameter_name: str,
 ) -> tuple[pd.DataFrame, str]:
     if isinstance(value, str):
-        return working_dataframe, value
+        return working_dataframe, _resolve_dataframe_column_name(dataframe, value)
 
     series = (
         value.reindex(dataframe.index)
@@ -377,6 +378,22 @@ def _resolve_feature_source_argument(
 
     working_dataframe[temp_column_name] = series
     return working_dataframe, temp_column_name
+
+
+def _resolve_dataframe_column_name(
+    dataframe: pd.DataFrame,
+    column_name: str,
+) -> str:
+    if column_name in dataframe.columns:
+        return column_name
+    if column_name == "price" and "close" in dataframe.columns:
+        return "close"
+    if column_name == "price":
+        raise ValueError(
+            "Column 'price' not found in the dataframe, and fallback column "
+            "'close' is also missing."
+        )
+    raise ValueError(f"Column '{column_name}' not found in the dataframe.")
 
 
 def _resolve_feature_scalar_argument(
