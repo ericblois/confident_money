@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pandas as pd
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 try:
@@ -249,6 +253,109 @@ class ChartWindowPersistenceTests(unittest.TestCase):
                 saved_settings.value("chart_window/sell_script", "", type=str),
                 "close <= 99",
             )
+
+    def test_chart_window_plots_distinct_parameterized_features_once_each(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=8, freq="D"),
+                "close": [100.0, 101.0, 102.0, 103.0, 102.0, 101.0, 104.0, 105.0],
+                "volume": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            settings = QtCore.QSettings(
+                str(Path(temp_dir) / "chart_window.ini"),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            chart = DataChart(data, show_spikes=False)
+            window = ChartWindow(
+                chart,
+                initial_script="vwap(3) > vwap(5)",
+                initial_sell_script="vwap(3) < close",
+                settings=settings,
+            )
+            self.addCleanup(window.close)
+
+            plotted_names = [hover_data.name for hover_data in window.chart._hover_series_data]
+            self.assertEqual(plotted_names.count("vwap(3)"), 1)
+            self.assertEqual(plotted_names.count("vwap(5)"), 1)
+            self.assertEqual(
+                {
+                    hover_data.pane_name
+                    for hover_data in window.chart._hover_series_data
+                    if hover_data.name.startswith("vwap(")
+                },
+                {"main"},
+            )
+
+    def test_chart_window_uses_source_pane_for_nested_overlay_features(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=8, freq="D"),
+                "close": [100.0, 101.0, 102.0, 103.0, 102.0, 101.0, 104.0, 105.0],
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            settings = QtCore.QSettings(
+                str(Path(temp_dir) / "chart_window.ini"),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            chart = DataChart(data, show_spikes=False)
+            window = ChartWindow(
+                chart,
+                initial_script="mv_avg(vlt(3), 2) > vlt(3)",
+                settings=settings,
+            )
+            self.addCleanup(window.close)
+
+            plotted_by_pane = {
+                (hover_data.pane_name, hover_data.name)
+                for hover_data in window.chart._hover_series_data
+            }
+            self.assertIn(("volatility", "vlt(3)"), plotted_by_pane)
+            self.assertIn(("volatility", "mv_avg(vlt(3), 2)"), plotted_by_pane)
+
+    def test_chart_window_show_uses_original_application_owner(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=8, freq="D"),
+                "close": [100.0, 101.0, 102.0, 103.0, 102.0, 101.0, 104.0, 105.0],
+                "volume": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            settings = QtCore.QSettings(
+                str(Path(temp_dir) / "chart_window.ini"),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            chart = DataChart(data, show_spikes=False)
+            window = ChartWindow(
+                chart,
+                initial_script="vwap(3) > close",
+                settings=settings,
+            )
+            self.addCleanup(window.close)
+
+            class _FakeApp:
+                def __init__(self) -> None:
+                    self.exec_called = False
+
+                def exec(self) -> int:
+                    self.exec_called = True
+                    return 0
+
+            fake_app = _FakeApp()
+            window._application = fake_app
+            window._owns_application = True
+
+            with patch.object(window.chart, "refresh_view") as refresh_view:
+                window.show()
+
+            refresh_view.assert_called_once_with(auto_range=True)
+            self.assertTrue(fake_app.exec_called)
 
 
 if __name__ == "__main__":

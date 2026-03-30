@@ -5,7 +5,12 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from condition_script import add_condition_column, evaluate_expression, parse_condition
+from condition_script import (
+    add_condition_column,
+    collect_script_feature_calls,
+    evaluate_expression,
+    parse_condition,
+)
 from condition_script.types import BOOLEAN
 from features import (
     calc_body_pct,
@@ -100,6 +105,20 @@ class ConditionScriptTests(unittest.TestCase):
     def test_quoted_source_arguments_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
             parse_condition("mv_avg('close', 2) > close")
+
+    def test_collect_script_feature_calls_tracks_nested_and_parameterized_calls(self) -> None:
+        feature_calls = collect_script_feature_calls(
+            "mv_avg(vlt(3), 2) > vlt(3) and vwap(20) > vwap(60)"
+        )
+
+        self.assertEqual(
+            [feature_call.rendered_call for feature_call in feature_calls],
+            ["vlt(3)", "mv_avg(vlt(3), 2)", "vwap(20)", "vwap(60)"],
+        )
+        self.assertEqual(
+            [feature_call.feature_name for feature_call in feature_calls],
+            ["vlt", "ma", "vwap", "vwap"],
+        )
 
 
 if __name__ == "__main__":
