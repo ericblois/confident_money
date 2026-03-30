@@ -16,6 +16,7 @@ from features import (
     calc_body_pct,
     calc_breakout_distance,
     calc_distance_to_col,
+    calc_ema,
     calc_garman_klass_volatility,
 )
 
@@ -36,6 +37,11 @@ class ConditionScriptTests(unittest.TestCase):
         expression = parse_condition(
             "mv_avg(close, 2) > mv_avg(close, 3) and (close > 11 or volume < 750)"
         )
+
+        self.assertIs(expression.value_type, BOOLEAN)
+
+    def test_crosses_operator_returns_boolean_expression(self) -> None:
+        expression = parse_condition("close crosses ema(close, 3)")
 
         self.assertIs(expression.value_type, BOOLEAN)
 
@@ -71,6 +77,19 @@ class ConditionScriptTests(unittest.TestCase):
         )
 
         pd.testing.assert_series_equal(result, expected, check_names=False)
+
+    def test_crosses_operator_only_triggers_on_the_cross_above_bar(self) -> None:
+        result = add_condition_column(self.dataframe, "close crosses ema(close, 3)")
+        ema = calc_ema(self.dataframe, "close", span=3)
+        expected = (
+            self.dataframe["close"].gt(ema)
+            & self.dataframe["close"].shift(1).le(ema.shift(1))
+        ).fillna(False)
+
+        pd.testing.assert_series_equal(
+            result["condition"],
+            expected.astype(bool).rename("condition"),
+        )
 
     def test_feature_script_functions_are_available_in_conditions(self) -> None:
         result = evaluate_expression(self.dataframe, "gk_vlt(3)")

@@ -145,7 +145,7 @@ def _evaluate_expression(
     if isinstance(expression, ComparisonExpression):
         left = _evaluate_expression(dataframe, expression.left, functions)
         right = _evaluate_expression(dataframe, expression.right, functions)
-        return _apply_comparison_operator(expression.operator, left, right)
+        return _apply_comparison_operator(dataframe, expression.operator, left, right)
 
     if isinstance(expression, LogicalExpression):
         values = [
@@ -190,6 +190,7 @@ def _apply_arithmetic_operator(
 
 
 def _apply_comparison_operator(
+    dataframe: pd.DataFrame,
     operator: str,
     left: RuntimeValue,
     right: RuntimeValue,
@@ -206,6 +207,23 @@ def _apply_comparison_operator(
         return left < right
     if operator == "<=":
         return left <= right
+    if operator == "crosses":
+        left_series = _as_numeric_series(
+            dataframe,
+            left,
+            parameter_name="left",
+            allow_column_name=False,
+        )
+        right_series = _as_numeric_series(
+            dataframe,
+            right,
+            parameter_name="right",
+            allow_column_name=False,
+        )
+        return (
+            left_series.gt(right_series)
+            & left_series.shift(1).le(right_series.shift(1))
+        ).fillna(False).astype(bool)
 
     raise ValueError(f"Unsupported comparison operator: {operator}")
 

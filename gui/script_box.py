@@ -15,6 +15,7 @@ from condition_script.autocomplete import (
 from condition_script.types import (
     FunctionDefinition,
     ScriptAutocompleteEntry,
+    WORD_COMPARISON_OPERATORS,
 )
 
 
@@ -32,6 +33,7 @@ _SCRIPT_EDITOR_MUTED_TEXT = "#94a3b8"
 _SCRIPT_EDITOR_PLACEHOLDER = "#7c8598"
 _SCRIPT_EDITOR_SELECTION = "#334155"
 _SCRIPT_KEYWORDS = frozenset({"and", "or", "not"})
+_SCRIPT_WORD_OPERATORS = WORD_COMPARISON_OPERATORS
 _SCRIPT_BOOLEANS = frozenset({"True", "False"})
 _OPENING_BRACKETS = "([{"
 _CLOSING_BRACKETS = ")]}"
@@ -203,6 +205,9 @@ class _ConditionScriptHighlighter(QtGui.QSyntaxHighlighter):
                 identifier = text[token_start:index]
                 if identifier in _SCRIPT_KEYWORDS:
                     self.setFormat(token_start, index - token_start, self._keyword_format)
+                    continue
+                if identifier in _SCRIPT_WORD_OPERATORS:
+                    self.setFormat(token_start, index - token_start, self._operator_format)
                     continue
                 if identifier in _SCRIPT_BOOLEANS:
                     self.setFormat(token_start, index - token_start, self._boolean_format)
@@ -679,11 +684,15 @@ class ConditionScriptEditor(QtWidgets.QPlainTextEdit):
         )
         cursor.insertText(suggestion.short_name)
 
-        if suggestion.kind == "function":
+        if suggestion.insert_kind == "function_call":
             next_character = self._character_at_position(cursor.position())
             if next_character != "(":
                 cursor.insertText("()")
                 cursor.movePosition(QtGui.QTextCursor.MoveOperation.Left)
+        elif suggestion.insert_kind == "operator":
+            next_character = self._character_at_position(cursor.position())
+            if not next_character or not next_character.isspace():
+                cursor.insertText(" ")
         cursor.endEditBlock()
 
         self.setTextCursor(cursor)

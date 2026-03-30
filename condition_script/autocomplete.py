@@ -181,7 +181,7 @@ def _autocomplete_sort_key(
     entry: ScriptAutocompleteEntry,
     query: str,
 ) -> tuple[int, int, int, str] | None:
-    kind_priority = 0 if entry.kind == "function" else 1
+    kind_priority = {"function": 0, "operator": 1, "parameter": 2}[entry.kind]
     return build_search_sort_key(
         query,
         script_name=entry.short_name,

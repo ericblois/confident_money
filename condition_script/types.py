@@ -28,7 +28,8 @@ class AnyValue:
 
 KindT = TypeVar("KindT", covariant=True)
 ReturnT = TypeVar("ReturnT", covariant=True)
-type ScriptNameKind = Literal["function", "parameter"]
+type ScriptNameKind = Literal["function", "operator", "parameter"]
+type ScriptAutocompleteInsertKind = Literal["plain", "function_call", "operator"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,14 +48,29 @@ class ScriptAutocompleteEntry:
     short_name: str
     full_name: str
     kind: ScriptNameKind
+    insert_kind: ScriptAutocompleteInsertKind = "plain"
 
     @property
     def kind_label(self) -> str:
-        return "Function" if self.kind == "function" else "Parameter"
+        return {
+            "function": "Function",
+            "operator": "Operator",
+            "parameter": "Parameter",
+        }[self.kind]
 
     @property
     def subtitle(self) -> str:
         return f"{self.kind_label} • {self.full_name}"
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptOperatorDefinition:
+    name: str
+    full_name: str
+
+
+def operator(name: str, full_name: str) -> ScriptOperatorDefinition:
+    return ScriptOperatorDefinition(name=name, full_name=full_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,9 +166,10 @@ class ColumnExpression(Expression[KindT]):
 
 
 type ArithmeticOperator = Literal["+", "-", "*", "/", "%", "**"]
-type ComparisonOperator = Literal["==", "!=", ">", ">=", "<", "<="]
+type ComparisonOperator = Literal["==", "!=", ">", ">=", "<", "<=", "crosses"]
 type LogicalOperator = Literal["and", "or"]
 type UnaryOperator = Literal["+", "-", "not"]
+type WordComparisonOperator = Literal["crosses"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +216,16 @@ class FunctionCallExpression(Expression[ReturnT]):
 type AnyExpression = Expression[Any]
 type ConditionExpression = Expression[BooleanValue]
 
+SCRIPT_OPERATOR_DEFINITIONS = (
+    operator("crosses", "Crosses Above"),
+)
+SCRIPT_OPERATOR_DEFINITIONS_BY_NAME = {
+    definition.name: definition for definition in SCRIPT_OPERATOR_DEFINITIONS
+}
+WORD_COMPARISON_OPERATORS: frozenset[WordComparisonOperator] = frozenset(
+    SCRIPT_OPERATOR_DEFINITIONS_BY_NAME
+)
+
 def get_function_full_name(name: str) -> str:
     return get_script_function_full_name(name)
 
@@ -209,16 +236,26 @@ def get_parameter_full_name(name: str) -> str:
 
 def build_script_autocomplete_entries(
     function_definitions: Iterable[FunctionDefinition[Any]],
+    operator_definitions: Iterable[ScriptOperatorDefinition] = SCRIPT_OPERATOR_DEFINITIONS,
 ) -> tuple[ScriptAutocompleteEntry, ...]:
     """Build a deduplicated autocomplete catalog from the active function registry."""
 
     entries: dict[tuple[ScriptNameKind, str], ScriptAutocompleteEntry] = {}
+
+    for operator_definition in operator_definitions:
+        entries[("operator", operator_definition.name)] = ScriptAutocompleteEntry(
+            short_name=operator_definition.name,
+            full_name=operator_definition.full_name,
+            kind="operator",
+            insert_kind="operator",
+        )
 
     for function_definition in function_definitions:
         entries[("function", function_definition.name)] = ScriptAutocompleteEntry(
             short_name=function_definition.name,
             full_name=function_definition.full_name,
             kind="function",
+            insert_kind="function_call",
         )
 
         for function_signature in function_definition.signatures:
@@ -232,6 +269,9 @@ def build_script_autocomplete_entries(
     return tuple(
         sorted(
             entries.values(),
-            key=lambda entry: (entry.kind != "function", entry.short_name.lower()),
+            key=lambda entry: (
+                {"function": 0, "operator": 1, "parameter": 2}[entry.kind],
+                entry.short_name.lower(),
+            ),
         )
     )

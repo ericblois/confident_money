@@ -29,7 +29,9 @@ class ScriptAutocompleteTests(unittest.TestCase):
             build_script_autocomplete_entries(get_default_function_definitions()),
         )
 
-    def test_autocomplete_catalog_includes_full_names_for_functions_and_parameters(self) -> None:
+    def test_autocomplete_catalog_includes_full_names_for_functions_parameters_and_operators(
+        self,
+    ) -> None:
         entry_map = {
             (entry.kind, entry.short_name): entry
             for entry in self.entries
@@ -48,6 +50,10 @@ class ScriptAutocompleteTests(unittest.TestCase):
         self.assertEqual(entry_map[("parameter", "price")].full_name, "Price Series")
         self.assertEqual(entry_map[("parameter", "source")].full_name, "Source Series")
         self.assertEqual(entry_map[("parameter", "volume")].full_name, "Volume Series")
+        self.assertEqual(
+            entry_map[("operator", "crosses")].full_name,
+            "Crosses Above",
+        )
 
     def test_autocomplete_entries_expose_kind_in_subtitle(self) -> None:
         entry_map = {
@@ -62,6 +68,14 @@ class ScriptAutocompleteTests(unittest.TestCase):
         self.assertEqual(
             entry_map[("parameter", "source")].subtitle,
             "Parameter • Source Series",
+        )
+        self.assertEqual(
+            entry_map[("operator", "crosses")].subtitle,
+            "Operator • Crosses Above",
+        )
+        self.assertEqual(
+            entry_map[("operator", "crosses")].insert_kind,
+            "operator",
         )
 
     def test_autocomplete_only_includes_parameters_used_by_current_registry(self) -> None:
@@ -84,6 +98,11 @@ class ScriptAutocompleteTests(unittest.TestCase):
         suggestions = get_script_autocomplete_suggestions(self.entries, "vw")
 
         self.assertEqual([entry.short_name for entry in suggestions], ["vwap"])
+
+    def test_autocomplete_includes_script_operators(self) -> None:
+        suggestions = get_script_autocomplete_suggestions(self.entries, "cro")
+
+        self.assertEqual([entry.short_name for entry in suggestions], ["crosses"])
 
     def test_autocomplete_includes_feature_script_names(self) -> None:
         suggestions = get_script_autocomplete_suggestions(self.entries, "gk")
