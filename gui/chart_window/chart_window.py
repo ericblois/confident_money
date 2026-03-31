@@ -11,7 +11,9 @@ from condition_script import (
 )
 from condition_script.types import ColumnExpression, FunctionCallExpression
 from gui.chart_window.chart import DataChart
+from gui.chart_window.left_panel import ChartLeftPanel
 from gui.chart_window.right_panel import ChartRightPanel
+from gui.components.text_btn import TextBtn, TextBtnStyle
 
 _SCRIPT_FEATURE_COLORS = (
     "#ef4444",
@@ -48,6 +50,30 @@ _PANE_LABELS = {
     "utils": "Derived",
 }
 _MAIN_SOURCE_COLUMNS = frozenset({"open", "high", "low", "close", "price"})
+_CHART_TITLE_STYLE = """
+    QFrame#chartContainer {
+        background: #24211f;
+    }
+    QLabel#chartHeaderTitle {
+        color: #f8fafc;
+        font-size: 16px;
+        font-weight: 600;
+    }
+"""
+_CHART_OPTIONS_BUTTON_STYLE = TextBtnStyle(
+    background="#1f2937",
+    hover_background="#334155",
+    pressed_background="#0f172a",
+    text_color="#f8fafc",
+    border_color="#475569",
+    hover_border_color="#64748b",
+    pressed_border_color="#64748b",
+    border_radius=6,
+    min_height=34,
+    horizontal_padding=12,
+    font_size=12,
+    font_weight=600,
+)
 
 
 class ChartWindow(QtWidgets.QMainWindow):
@@ -59,6 +85,7 @@ class ChartWindow(QtWidgets.QMainWindow):
     _SELL_SCRIPT_SETTINGS_KEY = "chart_window/sell_script"
     _BUY_REGION_COLOR = "#22c55e"
     _SELL_REGION_COLOR = "#ef4444"
+    _DEFAULT_LEFT_PANEL_WIDTH = 320
 
     def __init__(
         self,
@@ -99,10 +126,13 @@ class ChartWindow(QtWidgets.QMainWindow):
             initial_script=buy_script,
             initial_sell_script=sell_script,
         )
+        self.left_panel = ChartLeftPanel(self)
         try:
             self.chart = self._build_chart_for_scripts(buy_script, sell_script)
         except Exception:
             self.chart = self._build_chart_for_scripts("", "")
+        self.chart.set_title_visible(False)
+        self._left_panel_width = self._DEFAULT_LEFT_PANEL_WIDTH
 
         self._build_window()
         self._connect_signals()
@@ -116,20 +146,83 @@ class ChartWindow(QtWidgets.QMainWindow):
 
         self.setWindowTitle(self.chart.title)
         self.resize(1600, 920)
+        self._build_chart_container()
 
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self._splitter.setChildrenCollapsible(False)
-        self._splitter.addWidget(self.chart.widget)
+        self._splitter.addWidget(self.left_panel)
+        self._splitter.addWidget(self._chart_container)
         self._splitter.addWidget(self.right_panel)
-        self._splitter.setStretchFactor(0, 5)
-        self._splitter.setStretchFactor(1, 2)
-        self._splitter.setSizes([1180, 380])
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 5)
+        self._splitter.setStretchFactor(2, 2)
+        self.left_panel.hide()
+        self._splitter.setSizes([0, 1180, 380])
 
         self.setCentralWidget(self._splitter)
 
     def _connect_signals(self) -> None:
         self.right_panel.run_requested.connect(self.run_condition_script)
         self.right_panel.script_changed.connect(self._persist_script_state)
+        self._chart_options_button.clicked.connect(self._show_left_panel)
+        self.left_panel.close_requested.connect(self._hide_left_panel)
+
+    def _build_chart_container(self) -> None:
+        self._chart_container = QtWidgets.QFrame(self)
+        self._chart_container.setObjectName("chartContainer")
+        self._chart_container.setStyleSheet(_CHART_TITLE_STYLE)
+
+        self._chart_options_slot = QtWidgets.QWidget(self._chart_container)
+        self._chart_options_slot.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._chart_options_button = TextBtn(
+            "Chart Options",
+            style=_CHART_OPTIONS_BUTTON_STYLE,
+            parent=self._chart_options_slot,
+        )
+        self._chart_options_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        chart_options_slot_layout = QtWidgets.QHBoxLayout(self._chart_options_slot)
+        chart_options_slot_layout.setContentsMargins(0, 0, 0, 0)
+        chart_options_slot_layout.addWidget(
+            self._chart_options_button,
+            0,
+            QtCore.Qt.AlignmentFlag.AlignLeft,
+        )
+
+        self._chart_title_label = QtWidgets.QLabel(self.chart.title, self._chart_container)
+        self._chart_title_label.setObjectName("chartHeaderTitle")
+        self._chart_title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._chart_header_spacer = QtWidgets.QWidget(self._chart_container)
+        self._chart_header_spacer.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._sync_chart_header_balance()
+
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(18, 14, 18, 0)
+        header_layout.setSpacing(12)
+        header_layout.addWidget(self._chart_options_slot, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        header_layout.addWidget(self._chart_title_label, 1)
+        header_layout.addWidget(self._chart_header_spacer)
+
+        self._chart_layout = QtWidgets.QVBoxLayout(self._chart_container)
+        self._chart_layout.setContentsMargins(0, 0, 0, 0)
+        self._chart_layout.setSpacing(10)
+        self._chart_layout.addLayout(header_layout)
+        self._chart_layout.addWidget(self.chart.widget, 1)
+
+    def _sync_chart_header_balance(self) -> None:
+        """Keep equal header widths on both sides of the centered title."""
+
+        button_width = self._chart_options_button.sizeHint().width()
+        self._chart_options_slot.setFixedWidth(button_width)
+        self._chart_header_spacer.setFixedWidth(button_width)
 
     def _persist_script_state(self, buy_script: str, sell_script: str) -> None:
         self._settings.setValue(self._BUY_SCRIPT_SETTINGS_KEY, buy_script)
@@ -285,19 +378,53 @@ class ChartWindow(QtWidgets.QMainWindow):
         return "main"
 
     def _replace_chart(self, chart: DataChart) -> None:
-        if not hasattr(self, "_splitter"):
+        chart.set_title_visible(False)
+        if not hasattr(self, "_chart_layout"):
             self.chart = chart
             return
 
         previous_widget = self.chart.widget
-        splitter_sizes = self._splitter.sizes()
         self.chart = chart
-        self._splitter.insertWidget(0, self.chart.widget)
+        self._chart_layout.removeWidget(previous_widget)
+        self._chart_layout.insertWidget(1, self.chart.widget, 1)
         previous_widget.setParent(None)
         previous_widget.deleteLater()
-        if splitter_sizes:
-            self._splitter.setSizes(splitter_sizes)
+        self._chart_title_label.setText(self.chart.title)
         self.setWindowTitle(self.chart.title)
+
+    def _show_left_panel(self) -> None:
+        if not self.left_panel.isHidden():
+            return
+
+        self.left_panel.show()
+        self._chart_options_button.hide()
+        self._apply_splitter_sizes(show_left_panel=True)
+
+    def _hide_left_panel(self) -> None:
+        if self.left_panel.isHidden():
+            return
+
+        splitter_sizes = self._splitter.sizes()
+        if splitter_sizes and splitter_sizes[0] > 0:
+            self._left_panel_width = splitter_sizes[0]
+
+        self.left_panel.hide()
+        self._chart_options_button.show()
+        self._apply_splitter_sizes(show_left_panel=False)
+
+    def _apply_splitter_sizes(self, *, show_left_panel: bool) -> None:
+        splitter_sizes = self._splitter.sizes()
+        total_width = sum(splitter_sizes) or max(self.width(), 1)
+        right_panel_width = splitter_sizes[2] if len(splitter_sizes) >= 3 else 380
+
+        if show_left_panel:
+            left_panel_width = max(self.left_panel.minimumWidth(), self._left_panel_width)
+            chart_width = max(1, total_width - left_panel_width - right_panel_width)
+            self._splitter.setSizes([left_panel_width, chart_width, right_panel_width])
+            return
+
+        chart_width = max(1, total_width - right_panel_width)
+        self._splitter.setSizes([0, chart_width, right_panel_width])
 
     def run_condition_script(self, buy_script: str, sell_script: str = "") -> None:
         """Evaluate the buy and sell scripts and reflect the matching regions on the chart."""

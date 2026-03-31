@@ -445,6 +445,7 @@ class DataChart:
         self.title = title
         self.y_label = y_label
         self.show_spikes = show_spikes
+        self._show_title = True
 
         self.data[self.x_column] = self._coerce_x_values(self.data[self.x_column])
         self._x_is_datetime = pd.api.types.is_datetime64_any_dtype(self.data[self.x_column])
@@ -555,7 +556,7 @@ class DataChart:
     def _refresh_pane_axes(self) -> None:
         for index, pane in enumerate(self._panes):
             pane.plot_item.setLabel("left", pane.y_label, color=_CHART_AXIS_TEXT)
-            if index == 0:
+            if index == 0 and self._show_title:
                 pane.plot_item.setTitle(self.title, color=_CHART_TITLE_TEXT, size="14pt")
             else:
                 pane.plot_item.setTitle("")
@@ -934,6 +935,14 @@ class DataChart:
         """Expose the chart widget so it can be embedded in other Qt windows."""
 
         return self._layout_widget
+
+    def set_title_visible(self, visible: bool) -> None:
+        """Toggle whether the first pane renders the in-chart title."""
+
+        if self._show_title == visible:
+            return
+        self._show_title = visible
+        self._refresh_pane_axes()
 
     @property
     def application(self) -> QtWidgets.QApplication:

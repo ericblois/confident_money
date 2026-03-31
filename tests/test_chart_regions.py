@@ -357,6 +357,37 @@ class ChartWindowPersistenceTests(unittest.TestCase):
             refresh_view.assert_called_once_with(auto_range=True)
             self.assertTrue(fake_app.exec_called)
 
+    def test_chart_window_toggles_chart_options_panel(self) -> None:
+        data = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=4, freq="D"),
+                "close": [100.0, 101.0, 102.0, 103.0],
+            }
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            settings = QtCore.QSettings(
+                str(Path(temp_dir) / "chart_window.ini"),
+                QtCore.QSettings.Format.IniFormat,
+            )
+            chart = DataChart(data, title="Toggle Test Chart", show_spikes=False)
+            window = ChartWindow(chart, settings=settings)
+            self.addCleanup(window.close)
+
+            self.assertEqual(window._chart_title_label.text(), "Toggle Test Chart")
+            self.assertTrue(window.left_panel.isHidden())
+            self.assertFalse(window._chart_options_button.isHidden())
+
+            window._show_left_panel()
+
+            self.assertFalse(window.left_panel.isHidden())
+            self.assertTrue(window._chart_options_button.isHidden())
+
+            window._hide_left_panel()
+
+            self.assertTrue(window.left_panel.isHidden())
+            self.assertFalse(window._chart_options_button.isHidden())
+
 
 if __name__ == "__main__":
     unittest.main()

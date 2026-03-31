@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
         chart = DataChart(
             chart_data,
-            title=f"{SYMBOL} Hourly Price and Script Features",
+            title=f"{SYMBOL} Hourly",
             y_label="Price",
         )
         window = ChartWindow(chart)

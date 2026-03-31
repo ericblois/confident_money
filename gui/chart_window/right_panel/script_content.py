@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from gui.components.text_btn import TextBtn
 from gui.md_window import MarkdownWindow
 from gui.script_box import ConditionScriptBox
 
@@ -44,7 +45,7 @@ class ScriptContent(QtWidgets.QWidget):
         self._status_label.setObjectName("scriptStatus")
         self._status_label.setWordWrap(True)
 
-        self._run_button = QtWidgets.QPushButton("Run Conditions")
+        self._run_button = TextBtn("Run Conditions", parent=self)
 
         self._build_layout()
         self._connect_signals()

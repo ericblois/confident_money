@@ -144,21 +144,6 @@ class ChartRightPanel(QtWidgets.QFrame):
             QLabel#scriptStatus {
                 padding-top: 4px;
             }
-            QPushButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 6px;
-                color: white;
-                font-weight: 600;
-                min-height: 36px;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton:pressed {
-                background: #1e40af;
-            }
             """
         )
 
