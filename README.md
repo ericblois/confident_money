@@ -1,4 +1,4 @@
-# RAHHH compooter money
+# RAHHH
 
 Create a `.env` file in the project root and add your Financial Modeling Prep API key:
 
