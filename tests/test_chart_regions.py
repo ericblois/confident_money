@@ -10,6 +10,11 @@ import pandas as pd
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from gui.chart_window.trade_arrows import (
+    TradeArrowColorScale,
+    build_entry_exit_arrow_overlays,
+)
+
 
 try:
     from PySide6 import QtCore, QtWidgets
@@ -78,6 +83,63 @@ class ConditionRegionRangeTests(unittest.TestCase):
     def test_build_condition_region_ranges_validates_input_lengths(self) -> None:
         with self.assertRaises(ValueError):
             build_condition_region_ranges([True, False], [1.0])
+
+
+class TradeArrowOverlayTests(unittest.TestCase):
+    def test_trade_arrow_color_scale_interpolates_and_clamps(self) -> None:
+        scale = TradeArrowColorScale()
+
+        self.assertEqual(scale.resolve_color(-15.0), "#dc2626")
+        self.assertEqual(scale.resolve_color(0.0), "#ffffff")
+        self.assertEqual(scale.resolve_color(15.0), "#16a34a")
+        self.assertEqual(scale.resolve_color(-5.0), "#ed9292")
+        self.assertEqual(scale.resolve_color(5.0), "#8ad1a4")
+
+    def test_build_entry_exit_arrow_overlays_pairs_each_open_with_next_sell(self) -> None:
+        overlays = build_entry_exit_arrow_overlays(
+            x_values=pd.date_range("2024-01-01", periods=6, freq="D"),
+            prices=[100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+            buy_condition=[True, True, False, False, True, False],
+            sell_condition=[False, False, True, True, False, True],
+        )
+
+        self.assertEqual(len(overlays), 2)
+        self.assertEqual(overlays[0].start_x, pd.Timestamp("2024-01-01"))
+        self.assertEqual(overlays[0].end_x, pd.Timestamp("2024-01-03"))
+        self.assertEqual(overlays[0].start_y, 100.0)
+        self.assertEqual(overlays[0].end_y, 102.0)
+        self.assertEqual(overlays[0].label_text, "+2.00%")
+        self.assertEqual(overlays[0].label_side, "above")
+        self.assertEqual(overlays[0].label_visible_max_months, 24)
+        self.assertEqual(overlays[0].width, 2.6)
+        self.assertEqual(overlays[0].color, "#d0ecda")
+        self.assertEqual(overlays[1].start_x, pd.Timestamp("2024-01-05"))
+        self.assertEqual(overlays[1].end_x, pd.Timestamp("2024-01-06"))
+        self.assertEqual(overlays[1].label_text, "+0.96%")
+        self.assertEqual(overlays[1].label_side, "above")
+        self.assertEqual(overlays[1].color, "#e8f6ed")
+
+    def test_build_entry_exit_arrow_overlays_requires_matching_lengths(self) -> None:
+        with self.assertRaises(ValueError):
+            build_entry_exit_arrow_overlays(
+                x_values=[1, 2, 3],
+                prices=[10.0, 11.0, 12.0],
+                buy_condition=[True, False],
+                sell_condition=[False, True, False],
+            )
+
+    def test_build_entry_exit_arrow_overlays_formats_negative_returns(self) -> None:
+        overlays = build_entry_exit_arrow_overlays(
+            x_values=pd.date_range("2024-01-01", periods=2, freq="D"),
+            prices=[100.0, 96.58],
+            buy_condition=[True, False],
+            sell_condition=[False, True],
+        )
+
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(overlays[0].label_text, "-3.42%")
+        self.assertEqual(overlays[0].label_side, "below")
+        self.assertEqual(overlays[0].color, "#f3b4b4")
 
 
 @unittest.skipIf(

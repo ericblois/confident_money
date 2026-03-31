@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -9,6 +10,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from condition_script import evaluate_condition as _evaluate_condition_script
+from gui.chart_window.arrow_overlays import ArrowOverlay
 
 
 SeriesInput = str | Sequence[Any] | pd.Series
@@ -156,6 +158,18 @@ class _ChartPane:
 class _ConditionRegionItem:
     pane: _ChartPane
     item: pg.LinearRegionItem
+
+
+@dataclass(slots=True)
+class _ArrowOverlayItem:
+    pane: _ChartPane
+    line_item: pg.PlotCurveItem
+    head_item: pg.ArrowItem
+    label_item: pg.TextItem | None
+    label_side: str
+    label_visible_max_months: int | None
+    start_point: QtCore.QPointF
+    end_point: QtCore.QPointF
 
 
 def _estimate_plot_half_width(plot_x_values: np.ndarray, index: int) -> float:
@@ -472,6 +486,7 @@ class DataChart:
         self._view_feedback_timer.timeout.connect(self._apply_view_feedback)
         self._default_plot_x = self._to_plot_x(self.data[self.x_column])
         self._condition_region_items: list[_ConditionRegionItem] = []
+        self._arrow_overlay_items: list[_ArrowOverlayItem] = []
         self._week_divider_positions = self._build_week_divider_positions()
 
         self._create_pane("main", y_label=self.y_label, height_ratio=3)
@@ -545,6 +560,10 @@ class DataChart:
             self._attach_hover_feedback_to_pane(pane)
 
         pane.view_box.sigXRangeChanged.connect(self._handle_view_range_changed)
+        if hasattr(pane.view_box, "sigRangeChanged"):
+            pane.view_box.sigRangeChanged.connect(self._sync_arrow_overlays)
+        if hasattr(pane.view_box, "sigResized"):
+            pane.view_box.sigResized.connect(self._sync_arrow_overlays)
         self._sync_week_dividers_for_pane(pane)
         return pane
 
@@ -637,17 +656,11 @@ class DataChart:
         if not self._week_divider_positions or not self._x_is_datetime:
             return []
 
-        start_index = max(0, int(np.ceil(x_min)))
-        end_index = min(len(self.data) - 1, int(np.floor(x_max)))
-        if end_index < start_index:
+        visible_bounds = self._visible_datetime_bounds(x_min, x_max)
+        if visible_bounds is None:
             return []
 
-        visible_dates = self.data[self.x_column].iloc[start_index : end_index + 1].dropna()
-        if visible_dates.empty:
-            return []
-
-        visible_start = pd.Timestamp(visible_dates.iloc[0])
-        visible_end = pd.Timestamp(visible_dates.iloc[-1])
+        visible_start, visible_end = visible_bounds
         if visible_end >= visible_start + pd.DateOffset(months=6):
             return []
 
@@ -730,6 +743,7 @@ class DataChart:
     def _apply_view_feedback(self) -> None:
         self._update_hover_line()
         self._sync_week_dividers()
+        self._sync_arrow_overlays()
 
     def _hide_hover_feedback(self) -> None:
         self._hover_x_position = None
@@ -960,6 +974,7 @@ class DataChart:
                 pane.plot_item.autoRange()
             pane.view_box.refit_y_range()
         self._sync_week_dividers()
+        self._sync_arrow_overlays()
 
     def run_application(self) -> None:
         """Start the Qt event loop when this chart created the QApplication."""
@@ -973,6 +988,18 @@ class DataChart:
         while self._condition_region_items:
             region = self._condition_region_items.pop()
             region.pane.plot_item.removeItem(region.item)
+
+        return self
+
+    def clear_arrow_overlays(self) -> "DataChart":
+        """Remove every arrow overlay from the chart."""
+
+        while self._arrow_overlay_items:
+            overlay = self._arrow_overlay_items.pop()
+            overlay.pane.plot_item.removeItem(overlay.line_item)
+            overlay.pane.plot_item.removeItem(overlay.head_item)
+            if overlay.label_item is not None:
+                overlay.pane.plot_item.removeItem(overlay.label_item)
 
         return self
 
@@ -1028,8 +1055,252 @@ class DataChart:
 
         return len(region_ranges)
 
+    def set_arrow_overlays(
+        self,
+        overlays: Sequence[ArrowOverlay],
+        *,
+        clear_existing: bool = True,
+    ) -> int:
+        """Draw arrows between arbitrary chart coordinates."""
+
+        if clear_existing:
+            self.clear_arrow_overlays()
+
+        drawn_count = 0
+        for overlay in overlays:
+            start_x = self._resolve_overlay_x_value(overlay.start_x, name="arrow start")
+            end_x = self._resolve_overlay_x_value(overlay.end_x, name="arrow end")
+            start_y = float(overlay.start_y)
+            end_y = float(overlay.end_y)
+            if not all(np.isfinite([start_x, start_y, end_x, end_y])):
+                continue
+
+            pane = self._resolve_pane(overlay.pane)
+            line_item = pg.PlotCurveItem(
+                x=np.asarray([start_x, end_x], dtype=float),
+                y=np.asarray([start_y, end_y], dtype=float),
+                pen=self._build_arrow_overlay_pen(
+                    color=overlay.color,
+                    width=overlay.width,
+                    opacity=overlay.opacity,
+                ),
+                connect="all",
+                antialias=False,
+            )
+            head_item = pg.ArrowItem(
+                angle=180.0,
+                headLen=max(6.0, float(overlay.head_length or 10.0)),
+                tipAngle=float(overlay.tip_angle),
+                baseAngle=float(overlay.base_angle),
+                tailLen=0.0,
+                brush=self._build_arrow_overlay_brush(
+                    color=overlay.color,
+                    opacity=overlay.opacity,
+                ),
+                pen=self._build_arrow_overlay_pen(
+                    color=overlay.color,
+                    width=max(1.0, overlay.width * 0.7),
+                    opacity=overlay.opacity,
+                ),
+                pxMode=True,
+            )
+            line_item.setZValue(6)
+            head_item.setZValue(7)
+            pane.plot_item.addItem(line_item, ignoreBounds=True)
+            pane.plot_item.addItem(head_item, ignoreBounds=True)
+            label_item = (
+                self._build_arrow_overlay_label_item(
+                    overlay.label_text,
+                    label_side=overlay.label_side,
+                )
+                if overlay.label_text
+                else None
+            )
+            if label_item is not None:
+                pane.plot_item.addItem(label_item, ignoreBounds=True)
+            arrow_overlay_item = _ArrowOverlayItem(
+                pane=pane,
+                line_item=line_item,
+                head_item=head_item,
+                label_item=label_item,
+                label_side=overlay.label_side,
+                label_visible_max_months=overlay.label_visible_max_months,
+                start_point=QtCore.QPointF(start_x, start_y),
+                end_point=QtCore.QPointF(end_x, end_y),
+            )
+            self._arrow_overlay_items.append(arrow_overlay_item)
+            self._sync_arrow_overlay(arrow_overlay_item)
+            drawn_count += 1
+
+        return drawn_count
+
     def _resolve_condition_mask(self, condition: SeriesInput) -> pd.Series:
         return self._resolve_series(condition, name="condition mask").fillna(False).astype(bool)
+
+    def _resolve_overlay_x_value(self, value: Any, *, name: str) -> float:
+        if self._x_is_datetime:
+            parsed_value = pd.to_datetime(pd.Series([value]), errors="coerce").iloc[0]
+            if pd.isna(parsed_value):
+                raise ValueError(f"Invalid datetime x-coordinate for {name}: {value!r}")
+
+            matches = self.data[self.x_column].eq(pd.Timestamp(parsed_value))
+            if not matches.any():
+                raise ValueError(f"Unknown datetime x-coordinate for {name}: {value!r}")
+            return float(self._default_plot_x[matches].iloc[0])
+
+        numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric_value):
+            raise ValueError(f"Invalid numeric x-coordinate for {name}: {value!r}")
+        return float(numeric_value)
+
+    def _build_arrow_overlay_pen(
+        self,
+        *,
+        color: str,
+        width: float,
+        opacity: float,
+    ) -> QtGui.QPen:
+        pen_color = QtGui.QColor(color)
+        pen_color.setAlphaF(max(0.0, min(1.0, opacity)))
+        pen = pg.mkPen(pen_color, width=width)
+        pen.setCosmetic(True)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
+        return pen
+
+    def _build_arrow_overlay_brush(
+        self,
+        *,
+        color: str,
+        opacity: float,
+    ) -> QtGui.QBrush:
+        fill_color = QtGui.QColor(color)
+        fill_color.setAlphaF(max(0.0, min(1.0, opacity * 0.35)))
+        return pg.mkBrush(fill_color)
+
+    def _build_arrow_overlay_label_item(
+        self,
+        label_text: str,
+        *,
+        label_side: str,
+    ) -> pg.TextItem:
+        tooltip_fill = QtGui.QColor(_CHART_TOOLTIP_FILL)
+        tooltip_fill.setAlpha(235)
+        label_item = pg.TextItem(
+            anchor=(0.5, 1.0 if label_side == "above" else 0.0),
+            border=pg.mkPen(_CHART_TOOLTIP_BORDER),
+            fill=pg.mkBrush(tooltip_fill),
+        )
+        label_item.setHtml(
+            "<div style='color: "
+            + _CHART_TOOLTIP_TEXT
+            + "; font-size: 12px; font-weight: 600;'>"
+            + escape(label_text)
+            + "</div>"
+        )
+        label_item.setZValue(8)
+        label_item.hide()
+        return label_item
+
+    def _sync_arrow_overlays(self, *args: Any) -> None:
+        del args
+        for overlay in self._arrow_overlay_items:
+            self._sync_arrow_overlay(overlay)
+
+    def _sync_arrow_overlay(self, overlay: _ArrowOverlayItem) -> None:
+        start_scene_point = overlay.pane.view_box.mapViewToScene(overlay.start_point)
+        end_scene_point = overlay.pane.view_box.mapViewToScene(overlay.end_point)
+        scene_dx = float(end_scene_point.x() - start_scene_point.x())
+        scene_dy = float(end_scene_point.y() - start_scene_point.y())
+        if not np.isfinite(scene_dx) or not np.isfinite(scene_dy):
+            overlay.head_item.hide()
+            if overlay.label_item is not None:
+                overlay.label_item.hide()
+            return
+
+        scene_length = float(np.hypot(scene_dx, scene_dy))
+        if scene_length <= 0:
+            overlay.head_item.hide()
+            if overlay.label_item is not None:
+                overlay.label_item.hide()
+            return
+
+        overlay.head_item.setPos(overlay.end_point)
+        overlay.head_item.setStyle(angle=float(np.degrees(np.arctan2(scene_dy, scene_dx)) + 180.0))
+        overlay.head_item.show()
+        self._sync_arrow_overlay_label(
+            overlay,
+            start_scene_point=start_scene_point,
+            end_scene_point=end_scene_point,
+        )
+
+    def _sync_arrow_overlay_label(
+        self,
+        overlay: _ArrowOverlayItem,
+        *,
+        start_scene_point: QtCore.QPointF,
+        end_scene_point: QtCore.QPointF,
+    ) -> None:
+        if overlay.label_item is None:
+            return
+
+        x_min, x_max = overlay.pane.view_box.viewRange()[0]
+        if (
+            overlay.label_visible_max_months is not None
+            and not self._visible_datetime_span_within_months(
+                x_min,
+                x_max,
+                overlay.label_visible_max_months,
+            )
+        ):
+            overlay.label_item.hide()
+            return
+
+        midpoint_scene_point = QtCore.QPointF(
+            (start_scene_point.x() + end_scene_point.x()) / 2.0,
+            (start_scene_point.y() + end_scene_point.y()) / 2.0
+            + (-14.0 if overlay.label_side == "above" else 14.0),
+        )
+        midpoint_view_point = overlay.pane.view_box.mapSceneToView(midpoint_scene_point)
+        overlay.label_item.setPos(midpoint_view_point)
+        overlay.label_item.show()
+
+    def _visible_datetime_bounds(
+        self,
+        x_min: float,
+        x_max: float,
+    ) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+        if not self._x_is_datetime:
+            return None
+
+        start_index = max(0, int(np.ceil(x_min)))
+        end_index = min(len(self.data) - 1, int(np.floor(x_max)))
+        if end_index < start_index:
+            return None
+
+        visible_dates = self.data[self.x_column].iloc[start_index : end_index + 1].dropna()
+        if visible_dates.empty:
+            return None
+
+        return pd.Timestamp(visible_dates.iloc[0]), pd.Timestamp(visible_dates.iloc[-1])
+
+    def _visible_datetime_span_within_months(
+        self,
+        x_min: float,
+        x_max: float,
+        max_months: int,
+    ) -> bool:
+        if max_months <= 0:
+            return False
+        if not self._x_is_datetime:
+            return True
+
+        visible_bounds = self._visible_datetime_bounds(x_min, x_max)
+        if visible_bounds is None:
+            return False
+
+        visible_start, visible_end = visible_bounds
+        return visible_end <= visible_start + pd.DateOffset(months=max_months)
 
     def add_pane(
         self,

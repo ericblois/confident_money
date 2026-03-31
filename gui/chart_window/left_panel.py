@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtWidgets
 
+from gui.components.labeled_checkbox import LabeledCheckBox
+
 _CHART_BACKGROUND = "#24211f"
 
 
@@ -9,6 +11,7 @@ class ChartLeftPanel(QtWidgets.QFrame):
     """Placeholder container for future chart options."""
 
     close_requested = QtCore.Signal()
+    show_trade_arrows_changed = QtCore.Signal(bool)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -49,9 +52,14 @@ class ChartLeftPanel(QtWidgets.QFrame):
         self._dismiss_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._dismiss_button.setText("‹")
         self._dismiss_button.setToolTip("Hide chart options")
+        self._show_trade_arrows_checkbox = LabeledCheckBox(
+            "Show trade arrows",
+            parent=self,
+        )
 
         self._build_layout()
         self._dismiss_button.clicked.connect(self.close_requested.emit)
+        self._show_trade_arrows_checkbox.toggled.connect(self.show_trade_arrows_changed.emit)
 
     def _build_layout(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
@@ -64,4 +72,9 @@ class ChartLeftPanel(QtWidgets.QFrame):
         header_layout.addWidget(self._dismiss_button)
 
         layout.addLayout(header_layout)
+        layout.addSpacing(18)
+        layout.addWidget(self._show_trade_arrows_checkbox)
         layout.addStretch(1)
+
+    def show_trade_arrows_enabled(self) -> bool:
+        return self._show_trade_arrows_checkbox.isChecked()

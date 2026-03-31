@@ -10,9 +10,14 @@ from condition_script import (
     render_script_expression,
 )
 from condition_script.types import ColumnExpression, FunctionCallExpression
+from gui.chart_window.arrow_overlays import ArrowOverlay
 from gui.chart_window.chart import DataChart
 from gui.chart_window.left_panel import ChartLeftPanel
 from gui.chart_window.right_panel import ChartRightPanel
+from gui.chart_window.trade_arrows import (
+    TradeArrowColorScale,
+    build_entry_exit_arrow_overlays,
+)
 from gui.components.text_btn import TextBtn, TextBtnStyle
 
 _SCRIPT_FEATURE_COLORS = (
@@ -74,6 +79,10 @@ _CHART_OPTIONS_BUTTON_STYLE = TextBtnStyle(
     font_size=12,
     font_weight=600,
 )
+_TRADE_ARROW_COLOR_SCALE = TradeArrowColorScale(
+    negative_threshold=-10.0,
+    positive_threshold=10.0,
+)
 
 
 class ChartWindow(QtWidgets.QMainWindow):
@@ -133,6 +142,8 @@ class ChartWindow(QtWidgets.QMainWindow):
             self.chart = self._build_chart_for_scripts("", "")
         self.chart.set_title_visible(False)
         self._left_panel_width = self._DEFAULT_LEFT_PANEL_WIDTH
+        self._active_buy_condition: pd.Series | None = None
+        self._active_sell_condition: pd.Series | None = None
 
         self._build_window()
         self._connect_signals()
@@ -166,6 +177,7 @@ class ChartWindow(QtWidgets.QMainWindow):
         self.right_panel.script_changed.connect(self._persist_script_state)
         self._chart_options_button.clicked.connect(self._show_left_panel)
         self.left_panel.close_requested.connect(self._hide_left_panel)
+        self.left_panel.show_trade_arrows_changed.connect(self._refresh_trade_arrow_overlays)
 
     def _build_chart_container(self) -> None:
         self._chart_container = QtWidgets.QFrame(self)
@@ -426,6 +438,60 @@ class ChartWindow(QtWidgets.QMainWindow):
         chart_width = max(1, total_width - right_panel_width)
         self._splitter.setSizes([0, chart_width, right_panel_width])
 
+    def _refresh_trade_arrow_overlays(self, checked: bool | None = None) -> None:
+        del checked
+        self._apply_trade_arrow_overlays(
+            self.chart,
+            buy_condition=self._active_buy_condition,
+            sell_condition=self._active_sell_condition,
+        )
+
+    def _apply_trade_arrow_overlays(
+        self,
+        chart: DataChart,
+        *,
+        buy_condition: pd.Series | None,
+        sell_condition: pd.Series | None,
+    ) -> None:
+        chart.clear_arrow_overlays()
+        if (
+            buy_condition is None
+            or sell_condition is None
+            or not self.left_panel.show_trade_arrows_enabled()
+        ):
+            return
+
+        overlays = self._build_trade_arrow_overlays(
+            chart,
+            buy_condition=buy_condition,
+            sell_condition=sell_condition,
+        )
+        if overlays:
+            chart.set_arrow_overlays(overlays, clear_existing=False)
+
+    def _build_trade_arrow_overlays(
+        self,
+        chart: DataChart,
+        *,
+        buy_condition: pd.Series,
+        sell_condition: pd.Series,
+    ) -> tuple[ArrowOverlay, ...]:
+        price_column = next(
+            (column_name for column_name in ("close", "price") if column_name in chart.data.columns),
+            None,
+        )
+        if price_column is None:
+            return ()
+
+        return build_entry_exit_arrow_overlays(
+            chart.data[chart.x_column],
+            chart.data[price_column],
+            buy_condition,
+            sell_condition,
+            pane="main",
+            color_scale=_TRADE_ARROW_COLOR_SCALE,
+        )
+
     def run_condition_script(self, buy_script: str, sell_script: str = "") -> None:
         """Evaluate the buy and sell scripts and reflect the matching regions on the chart."""
 
@@ -434,17 +500,25 @@ class ChartWindow(QtWidgets.QMainWindow):
         try:
             next_chart = self._build_chart_for_scripts(buy_script, sell_script)
         except Exception as exc:
+            self._active_buy_condition = None
+            self._active_sell_condition = None
             self.chart.clear_condition_regions()
+            self.chart.clear_arrow_overlays()
             self.right_panel.show_error(str(exc))
             return
 
         if not buy_script and not sell_script:
+            self._active_buy_condition = None
+            self._active_sell_condition = None
             self._replace_chart(next_chart)
             self.chart.clear_condition_regions()
+            self.chart.clear_arrow_overlays()
             self.right_panel.show_error("Enter a buy or sell condition before running.")
             return
 
         conditions: list[tuple[str, str, object]] = []
+        buy_condition: pd.Series | None = None
+        sell_condition: pd.Series | None = None
         for label, script, color in (
             ("Buy", buy_script, self._BUY_REGION_COLOR),
             ("Sell", sell_script, self._SELL_REGION_COLOR),
@@ -455,12 +529,26 @@ class ChartWindow(QtWidgets.QMainWindow):
             try:
                 condition = next_chart.evaluate_condition_script(script)
             except Exception as exc:
+                self._active_buy_condition = None
+                self._active_sell_condition = None
                 self.chart.clear_condition_regions()
+                self.chart.clear_arrow_overlays()
                 self.right_panel.show_error(f"{label} condition error: {exc}")
                 return
 
+            if label == "Buy":
+                buy_condition = condition
+            else:
+                sell_condition = condition
             conditions.append((label, color, condition))
 
+        self._active_buy_condition = buy_condition
+        self._active_sell_condition = sell_condition
+        self._apply_trade_arrow_overlays(
+            next_chart,
+            buy_condition=buy_condition,
+            sell_condition=sell_condition,
+        )
         self._replace_chart(next_chart)
         self.chart.clear_condition_regions()
         summary_parts: list[str] = []
